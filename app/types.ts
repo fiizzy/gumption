@@ -1,6 +1,7 @@
 export interface NodeData {
   id: string;
   parentId: string | null;
+  linkedFromId: string | null; // auto-link to previous node (visual only, no branch context)
   prompt: string;
   response: string;
   x: number;

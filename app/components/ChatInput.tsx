@@ -1,6 +1,8 @@
 'use client';
 
 import { useState, useRef, useEffect } from 'react';
+import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
+import { faCodeBranch, faXmark, faPaperPlane } from '@fortawesome/free-solid-svg-icons';
 
 interface Props {
   activeNodeId: string | null;
@@ -25,77 +27,43 @@ export default function ChatInput({ activeNodeId, activeNodePrompt, onSubmit, on
   };
 
   return (
-    <div
-      style={{
-        position: 'fixed',
-        bottom: 24,
-        left: '50%',
-        transform: 'translateX(-50%)',
-        width: 580,
-        maxWidth: 'calc(100vw - 32px)',
-        zIndex: 200,
-        filter: 'var(--shadow-input)',
-      }}
-    >
-      {/* Branch context banner */}
-      <div style={{
-        display: 'grid',
-        gridTemplateRows: activeNodeId ? '1fr' : '0fr',
-        transition: 'grid-template-rows 0.22s cubic-bezier(0.4, 0, 0.2, 1)',
-      }}>
-        <div style={{ overflow: 'hidden' }}>
-          <div style={{
-            background: 'var(--branch-bg)',
-            border: '1px solid var(--branch-border)',
-            borderBottom: 'none',
-            borderRadius: '10px 10px 0 0',
-            padding: '7px 12px',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            gap: 8,
-          }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, overflow: 'hidden' }}>
-              <span style={{ color: 'var(--accent)', fontSize: 12, flexShrink: 0 }}>↗</span>
-              <span style={{
-                fontSize: 12, color: 'var(--branch-text)',
-                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-              }}>
+    <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[200] w-[580px] max-w-[calc(100vw-32px)] font-sans"
+         style={{ filter: 'drop-shadow(var(--shadow-input))' }}>
+
+      {/* Branch context banner — slides down when active */}
+      <div style={{ display: 'grid', gridTemplateRows: activeNodeId ? '1fr' : '0fr', transition: 'grid-template-rows 0.22s cubic-bezier(0.4,0,0.2,1)' }}>
+        <div className="overflow-hidden">
+          <div className="flex items-center justify-between gap-2 px-3 py-1.5
+                          bg-branch-surface border border-branch-border border-b-0
+                          rounded-t-[10px] text-xs text-branch-fg">
+            <div className="flex items-center gap-1.5 min-w-0">
+              <FontAwesomeIcon icon={faCodeBranch} className="text-accent shrink-0 w-2.5 h-2.5" />
+              <span className="truncate">
                 Branching from&nbsp;
-                <em style={{ fontStyle: 'normal', fontWeight: 600 }}>
+                <em className="not-italic font-semibold">
                   &ldquo;{activeNodePrompt?.slice(0, 52)}{(activeNodePrompt?.length ?? 0) > 52 ? '…' : ''}&rdquo;
                 </em>
               </span>
             </div>
             <button
               onClick={onClearActive}
-              style={{
-                background: 'none', border: 'none', color: 'var(--branch-text)',
-                cursor: 'pointer', fontSize: 16, lineHeight: 1, opacity: 0.7,
-                padding: '0 2px', flexShrink: 0,
-                transition: 'opacity 0.15s',
-              }}
-              onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.opacity = '1'; }}
-              onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.opacity = '0.7'; }}
+              className="shrink-0 opacity-70 hover:opacity-100 transition-opacity
+                         bg-transparent border-none cursor-pointer text-branch-fg"
               title="Cancel branch"
             >
-              ×
+              <FontAwesomeIcon icon={faXmark} className="w-3 h-3" />
             </button>
           </div>
         </div>
       </div>
 
       {/* Input row */}
-      <div style={{
-        display: 'flex',
-        background: 'var(--input-bg)',
-        borderRadius: activeNodeId ? '0 0 12px 12px' : '12px',
-        border: '1px solid',
-        borderColor: activeNodeId ? 'var(--accent)' : 'var(--input-border)',
-        overflow: 'hidden',
-        boxShadow: 'var(--shadow-input)',
-        transition: 'border-color 0.2s',
-      }}>
+      <div className={`flex overflow-hidden bg-surface-overlay border transition-colors duration-200
+                       ${activeNodeId
+                         ? 'border-accent rounded-b-xl rounded-t-none'
+                         : 'border-border rounded-xl'
+                       }`}
+           style={{ boxShadow: 'var(--shadow-input)' }}>
         <input
           ref={inputRef}
           value={value}
@@ -105,47 +73,27 @@ export default function ChatInput({ activeNodeId, activeNodePrompt, onSubmit, on
             if (e.key === 'Escape' && activeNodeId) onClearActive();
           }}
           placeholder={activeNodeId ? 'Continue this thread…' : 'Start a new conversation…'}
-          style={{
-            flex: 1,
-            padding: '15px 16px',
-            background: 'transparent',
-            border: 'none',
-            outline: 'none',
-            color: 'var(--text)',
-            fontSize: 14,
-            fontFamily: 'inherit',
-          }}
+          className="flex-1 px-4 py-[15px] bg-transparent border-none outline-none
+                     text-sm text-foreground placeholder:text-foreground-subtle font-sans"
         />
         <button
           onClick={submit}
           disabled={!value.trim()}
-          style={{
-            padding: '0 20px',
-            background: value.trim() ? 'var(--accent)' : 'transparent',
-            border: 'none',
-            color: value.trim() ? '#fff' : 'var(--text-faint)',
-            cursor: value.trim() ? 'pointer' : 'default',
-            fontSize: 13,
-            fontWeight: 600,
-            fontFamily: 'inherit',
-            transition: 'background 0.15s, color 0.15s',
-            flexShrink: 0,
-          }}
+          className={`px-5 shrink-0 flex items-center gap-1.5 text-sm font-semibold border-none transition-colors duration-150 cursor-pointer font-sans
+                      ${value.trim()
+                        ? 'bg-accent text-white hover:bg-accent-hover'
+                        : 'bg-transparent text-foreground-subtle cursor-default'
+                      }`}
         >
-          Send ↵
+          Send <FontAwesomeIcon icon={faPaperPlane} className="w-3 h-3" />
         </button>
       </div>
 
       {/* Hint */}
       {!activeNodeId && (
-        <p style={{
-          textAlign: 'center',
-          fontSize: 11,
-          color: 'var(--text-faint)',
-          marginTop: 7,
-          letterSpacing: '0.01em',
-        }}>
-          Press <strong style={{ color: 'var(--text-muted)' }}>Branch</strong> on any node to continue a thread · <strong style={{ color: 'var(--text-muted)' }}>Esc</strong> to deselect
+        <p className="mt-1.5 text-center text-[11px] text-foreground-subtle tracking-wide">
+          Press <strong className="text-foreground-muted font-semibold">Branch</strong> on any node to continue a thread
+          · <strong className="text-foreground-muted font-semibold">Esc</strong> to deselect
         </p>
       )}
     </div>

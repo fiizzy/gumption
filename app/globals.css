@@ -1,126 +1,174 @@
 @import "tailwindcss";
 
-/* ── Reset ───────────────────────────────────────── */
-*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-html, body { width: 100%; height: 100%; overflow: hidden; -webkit-font-smoothing: antialiased; }
+/* ═══════════════════════════════════════════════════════════════
+   DESIGN TOKENS  (dark theme — the default)
+   @theme registers token names with Tailwind, which generates
+   utility classes: bg-surface, text-foreground, shadow-card …
+   The values set here ARE the dark theme. [data-theme="light"]
+   below overrides just the tokens that differ in light mode.
 
-/* ── Theme tokens ────────────────────────────────── */
-[data-theme="dark"] {
-  --canvas-bg:          #111113;
-  --canvas-dot:         #1d1d24;
-  --toolbar-bg:         #18181b;
-  --toolbar-border:     #27272a;
-  --card-bg:            #1c1c21;
-  --card-border:        #2e2e38;
-  --card-sep:           #252530;
-  --text:               #e4e4e7;
-  --text-muted:         #71717a;
-  --text-faint:         #3f3f46;
-  --connector:          #2e2e38;
-  --input-bg:           #1c1c21;
-  --input-border:       #27272a;
-  --input-placeholder:  #3f3f46;
-  --accent:             #5e6ad2;
-  --accent-hover:       #4f5bbf;
-  --accent-muted:       rgba(94,106,210,.15);
-  --badge-bg:           #27272a;
-  --badge-text:         #a1a1aa;
-  --branch-bg:          #1e1b4b;
-  --branch-text:        #a5b4fc;
-  --branch-border:      #312e81;
-  --swatch-border:      rgba(255,255,255,.1);
-  --shadow-card:        0 1px 3px rgba(0,0,0,.5), 0 4px 16px rgba(0,0,0,.4);
-  --shadow-card-active: 0 0 0 2px var(--accent), 0 4px 20px rgba(0,0,0,.5);
-  --shadow-input:       0 8px 40px rgba(0,0,0,.7);
+   HOW THEMING WORKS
+   ─────────────────
+   Utilities reference CSS variables internally:
+     .bg-surface { background-color: var(--color-surface) }
+   When [data-theme="light"] swaps --color-surface, every element
+   using bg-surface gets the light value automatically. No class
+   names change — only the CSS variable values do.
+═══════════════════════════════════════════════════════════════ */
+@theme {
+  /* ── Typography ───────────────────────── */
+  --font-sans:
+    -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif;
+
+  /* ── Brand (same in both themes) ─────── */
+  --color-accent: #5e6ad2;
+  --color-accent-hover: #4f5bbf;
+
+  /* ── Surfaces ─────────────────────────── */
+  --color-surface: #111113;
+  --color-surface-raised: #18181b;
+  --color-surface-overlay: #1c1c21;
+  --color-surface-subtle: #27272a;
+
+  /* ── Text ─────────────────────────────── */
+  --color-foreground: #f6f6f8;
+  --color-foreground-muted: #a3a3ad;
+  --color-foreground-subtle: #3f3f46;
+
+  /* ── Borders ──────────────────────────── */
+  --color-border: #2e2e38;
+  --color-border-subtle: #252530;
+
+  /* ── Canvas ───────────────────────────── */
+  --color-canvas-dot: #1d1d24;
+  --color-connector:  #c4c4d8;
+
+  /* ── Branch banner ────────────────────── */
+  --color-branch-surface: #1e1b4b;
+  --color-branch-fg: #a5b4fc;
+  --color-branch-border: #312e81;
+
+  /* ── Shadows ──────────────────────────── */
+  --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.5), 0 4px 16px rgba(0, 0, 0, 0.4);
+  --shadow-card-active: 0 0 0 2px #5e6ad2, 0 4px 20px rgba(0, 0, 0, 0.5);
+  --shadow-input: 0 8px 40px rgba(0, 0, 0, 0.7);
+
+  /* ── Animations ───────────────────────── */
+  --animate-thinking: cc-thinking 1.2s ease-in-out infinite;
+  --animate-node-in: cc-fadein 0.22s cubic-bezier(0.4, 0, 0.2, 1) both;
+  --animate-mode-toast: cc-toast 1.3s cubic-bezier(0.4, 0, 0.2, 1) both;
+
+  /* ── Sizes ────────────────────────────── */
+  --width-node: 300px; /* → w-node */
 }
 
+/* ═══════════════════════════════════════════════════════════════
+   LIGHT THEME  — overrides the @theme defaults above
+═══════════════════════════════════════════════════════════════ */
 [data-theme="light"] {
-  --canvas-bg:          #f7f7f8;
-  --canvas-dot:         #d0d0d6;
-  --toolbar-bg:         #ffffff;
-  --toolbar-border:     #e4e4e7;
-  --card-bg:            #ffffff;
-  --card-border:        #e4e4e7;
-  --card-sep:           #f4f4f5;
-  --text:               #09090b;
-  --text-muted:         #71717a;
-  --text-faint:         #d4d4d8;
-  --connector:          #c8c8d0;
-  --input-bg:           #ffffff;
-  --input-border:       #e4e4e7;
-  --input-placeholder:  #a1a1aa;
-  --accent:             #5e6ad2;
-  --accent-hover:       #4f5bbf;
-  --accent-muted:       rgba(94,106,210,.1);
-  --badge-bg:           #f4f4f5;
-  --badge-text:         #71717a;
-  --branch-bg:          #eef2ff;
-  --branch-text:        #4338ca;
-  --branch-border:      #c7d2fe;
-  --swatch-border:      rgba(0,0,0,.12);
-  --shadow-card:        0 1px 2px rgba(0,0,0,.06), 0 4px 12px rgba(0,0,0,.07);
-  --shadow-card-active: 0 0 0 2px var(--accent), 0 4px 16px rgba(0,0,0,.1);
-  --shadow-input:       0 8px 40px rgba(0,0,0,.15);
+  --color-surface: #f7f7f8;
+  --color-surface-raised: #ffffff;
+  --color-surface-overlay: #ffffff;
+  --color-surface-subtle: #f4f4f5;
+
+  --color-foreground: #09090b;
+  --color-foreground-muted: #71717a;
+  --color-foreground-subtle: #d4d4d8;
+
+  --color-border: #e4e4e7;
+  --color-border-subtle: #f4f4f5;
+
+  --color-canvas-dot: #d0d0d6;
+  --color-connector: #96969f;
+
+  --color-branch-surface: #eef2ff;
+  --color-branch-fg: #4338ca;
+  --color-branch-border: #c7d2fe;
+
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.06), 0 4px 12px rgba(0, 0, 0, 0.07);
+  --shadow-card-active: 0 0 0 2px #5e6ad2, 0 4px 16px rgba(0, 0, 0, 0.1);
+  --shadow-input: 0 8px 40px rgba(0, 0, 0, 0.15);
 }
 
-/* ── Shared component styles ─────────────────────── */
-.cc-toolbar-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 5px 10px;
-  border-radius: 6px;
-  cursor: pointer;
-  font-size: 13px;
-  font-family: inherit;
+/* ═══════════════════════════════════════════════════════════════
+   BASE RESET
+   Inside @layer base so Tailwind utilities always win.
+═══════════════════════════════════════════════════════════════ */
+@layer base {
+  *,
+  *::before,
+  *::after {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+  }
+  html,
+  body {
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+}
+
+/* ── Thin scrollbar for node bodies ── */
+.cc-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border) transparent;
+}
+.cc-scroll::-webkit-scrollbar {
+  width: 4px;
+}
+.cc-scroll::-webkit-scrollbar-track {
   background: transparent;
-  border: 1px solid transparent;
-  color: var(--text-muted);
-  transition: background 0.14s, color 0.14s, border-color 0.14s;
-  white-space: nowrap;
 }
-.cc-toolbar-btn:hover {
-  background: var(--badge-bg);
-  color: var(--text);
-  border-color: var(--card-border);
+.cc-scroll::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border-radius: 4px;
+}
+.cc-scroll::-webkit-scrollbar-thumb:hover {
+  background: var(--color-foreground-muted);
 }
 
-.cc-node-action-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 4px 10px;
-  border-radius: 6px;
-  cursor: pointer;
-  font-size: 12px;
-  font-weight: 500;
-  font-family: inherit;
-  border: 1px solid var(--card-border);
-  background: transparent;
-  color: var(--text-muted);
-  transition: background 0.12s, color 0.12s, border-color 0.12s;
-}
-.cc-node-action-btn:hover {
-  background: var(--badge-bg);
-  color: var(--text);
-}
-.cc-node-action-btn.active {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #fff;
-}
-
-/* ── Animations ──────────────────────────────────── */
+/* ── Keyframes ── */
 @keyframes cc-thinking {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50%       { opacity: .3; transform: scale(.85); }
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.3;
+    transform: scale(0.85);
+  }
 }
 
 @keyframes cc-fadein {
-  from { opacity: 0; transform: translateY(4px); }
-  to   { opacity: 1; transform: translateY(0); }
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
-.cc-node-enter {
-  animation: cc-fadein 0.22s cubic-bezier(0.4, 0, 0.2, 1) both;
+@keyframes cc-toast {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, 6px) scale(0.96);
+  }
+  14% {
+    opacity: 1;
+    transform: translate(-50%, 0) scale(1);
+  }
+  80% {
+    opacity: 1;
+    transform: translate(-50%, 0) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -4px) scale(0.98);
+  }
 }

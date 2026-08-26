@@ -1,0 +1,31 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "enables the default permissions",
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "core:default",
+    {
+      "identifier": "shell:allow-execute",
+      "allow": [
+        {
+          "name": "claude-code",
+          "cmd": "claude",
+          "args": [
+            "-p",
+            { "validator": "[\\s\\S]*" },
+            "--output-format",
+            "json",
+            "--no-session-persistence",
+            "--tools=",
+            "--append-system-prompt",
+            { "validator": "[\\s\\S]*" }
+          ],
+          "sidecar": false
+        }
+      ]
+    }
+  ]
+}

@@ -1,6 +1,7 @@
 "use client";
 
 import { useRef, useEffect, useState } from "react";
+import { Handle, Position, type NodeProps } from "@xyflow/react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import {
   faGripVertical,
@@ -10,30 +11,8 @@ import {
   faChevronUp,
   faCodeBranch,
 } from "@fortawesome/free-solid-svg-icons";
-import { NodeData } from "../types";
-import { TOOLBAR_H } from "./Toolbar";
+import { HydratedConversationNode } from "../types";
 import { cn } from "../lib/cn";
-
-interface Props {
-  node: NodeData;
-  panX: number;
-  panY: number;
-  scale: number;
-  isActive: boolean;
-  isSelected: boolean;
-  selectedCount: number;
-  parentPrompt?: string;
-  onBranch: () => void;
-  onSelect: () => void;
-  onFocus: () => void;
-  onExpand: () => void;
-  onMove: (x: number, y: number) => void;
-  onGroupDragStart: () => void;
-  onGroupMove: (dx: number, dy: number) => void;
-  onColorChange: (color: string) => void;
-  onToggleMinimize: () => void;
-  onDimsChange: (w: number, h: number) => void;
-}
 
 // Sentinel value — "no tint", the card just uses the app's normal
 // theme-aware surface color instead of a flat background.
@@ -53,77 +32,36 @@ export const SWATCHES = [
 // Perceived-brightness check (YIQ) — decides whether a solid tint needs
 // dark or light text/borders on top of it to stay legible.
 function isLightColor(hex: string): boolean {
-  const r = parseInt(hex.slice(1, 3), 16);
-  const g = parseInt(hex.slice(3, 5), 16);
-  const b = parseInt(hex.slice(5, 7), 16);
-  const yiq = (r * 299 + g * 587 + b * 114) / 1000;
+  const red = parseInt(hex.slice(1, 3), 16);
+  const green = parseInt(hex.slice(3, 5), 16);
+  const blue = parseInt(hex.slice(5, 7), 16);
+  const yiq = (red * 299 + green * 587 + blue * 114) / 1000;
   return yiq >= 140;
 }
 
+// Handles are invisible connection points that only exist so the custom
+// "branch"/"link" edges know which side of the card to attach to — end
+// users never drag new connections from them (isConnectable={false}).
+const HANDLE_STYLE = { opacity: 0, width: 1, height: 1, pointerEvents: "none" as const };
+
 export default function ConversationNode({
-  node,
-  panX,
-  panY,
-  scale,
-  isActive,
-  isSelected,
-  selectedCount,
-  parentPrompt,
-  onBranch,
-  onSelect,
-  onFocus,
-  onExpand,
-  onMove,
-  onGroupDragStart,
-  onGroupMove,
-  onColorChange,
-  onToggleMinimize,
-  onDimsChange,
-}: Props) {
-  const nodeRef = useRef<HTMLDivElement>(null);
-  const isDragging = useRef(false);
-  const dragOffset = useRef({ x: 0, y: 0 });
-  const dragStartMouse = useRef({ x: 0, y: 0 });
-
-  // Distinguishes a plain click on the header from a drag, so the header
-  // can toggle collapse on click without fighting the drag-to-move handle.
-  const dragStartClient = useRef({ x: 0, y: 0 });
-  const hasDragged = useRef(false);
-
-  // Refs to avoid stale closures in global listeners
-  const panRef = useRef({ x: panX, y: panY });
-  const scaleRef = useRef(scale);
-  const onMoveRef = useRef(onMove);
-  const onGroupDragStartRef = useRef(onGroupDragStart);
-  const onGroupMoveRef = useRef(onGroupMove);
-  const nodeRef2 = useRef(node);
-  const isSelectedRef = useRef(isSelected);
-  const selectedCountRef = useRef(selectedCount);
-
-  useEffect(() => {
-    panRef.current = { x: panX, y: panY };
-  }, [panX, panY]);
-  useEffect(() => {
-    scaleRef.current = scale;
-  }, [scale]);
-  useEffect(() => {
-    onMoveRef.current = onMove;
-  }, [onMove]);
-  useEffect(() => {
-    onGroupDragStartRef.current = onGroupDragStart;
-  }, [onGroupDragStart]);
-  useEffect(() => {
-    onGroupMoveRef.current = onGroupMove;
-  }, [onGroupMove]);
-  useEffect(() => {
-    nodeRef2.current = node;
-  }, [node]);
-  useEffect(() => {
-    isSelectedRef.current = isSelected;
-  }, [isSelected]);
-  useEffect(() => {
-    selectedCountRef.current = selectedCount;
-  }, [selectedCount]);
+  data,
+  selected,
+}: NodeProps<HydratedConversationNode>) {
+  const {
+    prompt,
+    response,
+    loading,
+    minimized,
+    color,
+    branchParentPromptPreview,
+    isBranchActive,
+    onToggleBranch,
+    onFocusNode,
+    onExpandNode,
+    onColorChange,
+    onToggleMinimize,
+  } = data;
 
   const [showColors, setShowColors] = useState(false);
 
@@ -132,88 +70,21 @@ export default function ConversationNode({
   const bodyRef = useRef<HTMLDivElement>(null);
   const [bodyHeight, setBodyHeight] = useState(0);
   useEffect(() => {
-    const el = bodyRef.current;
-    if (!el) return;
-    const obs = new ResizeObserver((entries) =>
+    const bodyElement = bodyRef.current;
+    if (!bodyElement) return;
+    const observer = new ResizeObserver((entries) =>
       setBodyHeight(entries[0].contentRect.height),
     );
-    obs.observe(el);
-    return () => obs.disconnect();
+    observer.observe(bodyElement);
+    return () => observer.disconnect();
   }, []);
-
-  // ResizeObserver — report layout dimensions to parent
-  useEffect(() => {
-    const el = nodeRef.current;
-    if (!el) return;
-    const obs = new ResizeObserver(() => {
-      if (nodeRef.current)
-        onDimsChange(nodeRef.current.offsetWidth, nodeRef.current.offsetHeight);
-    });
-    obs.observe(el);
-    onDimsChange(el.offsetWidth, el.offsetHeight);
-    return () => obs.disconnect();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // Global drag listeners (set up once, read latest values via refs)
-  useEffect(() => {
-    const onMouseMove = (e: MouseEvent) => {
-      if (!isDragging.current) return;
-      if (!hasDragged.current) {
-        const dx = e.clientX - dragStartClient.current.x;
-        const dy = e.clientY - dragStartClient.current.y;
-        if (Math.hypot(dx, dy) > 4) hasDragged.current = true;
-      }
-      const s = scaleRef.current,
-        p = panRef.current;
-      if (isSelectedRef.current && selectedCountRef.current > 1) {
-        const dx = (e.clientX - dragStartMouse.current.x) / s;
-        const dy = (e.clientY - TOOLBAR_H - dragStartMouse.current.y) / s;
-        onGroupMoveRef.current(dx, dy);
-      } else {
-        onMoveRef.current(
-          (e.clientX - dragOffset.current.x - p.x) / s,
-          (e.clientY - TOOLBAR_H - dragOffset.current.y - p.y) / s,
-        );
-      }
-    };
-    const onMouseUp = () => {
-      isDragging.current = false;
-    };
-    window.addEventListener("mousemove", onMouseMove);
-    window.addEventListener("mouseup", onMouseUp);
-    return () => {
-      window.removeEventListener("mousemove", onMouseMove);
-      window.removeEventListener("mouseup", onMouseUp);
-    };
-  }, []);
-
-  const startDrag = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    e.preventDefault();
-    isDragging.current = true;
-    hasDragged.current = false;
-    dragStartClient.current = { x: e.clientX, y: e.clientY };
-    const n = nodeRef2.current,
-      s = scaleRef.current,
-      p = panRef.current;
-    if (isSelectedRef.current && selectedCountRef.current > 1) {
-      dragStartMouse.current = { x: e.clientX, y: e.clientY - TOOLBAR_H };
-      onGroupDragStartRef.current();
-    } else {
-      dragOffset.current = {
-        x: e.clientX - (n.x * s + p.x),
-        y: e.clientY - TOOLBAR_H - (n.y * s + p.y),
-      };
-    }
-  };
 
   // When the node has a user-selected tint, pick dark-on-light or
   // light-on-dark overlay colors based on that tint's own brightness —
   // the swatches now include solid, more saturated colors, so a single
   // "always use dark text" rule no longer holds for all of them.
-  const hasTint = node.color !== DEFAULT_COLOR;
-  const tintIsLight = hasTint && isLightColor(node.color);
+  const hasTint = color !== DEFAULT_COLOR;
+  const tintIsLight = hasTint && isLightColor(color);
   const textCls = !hasTint
     ? "text-foreground"
     : tintIsLight
@@ -247,44 +118,36 @@ export default function ConversationNode({
 
   // Title mirrors the AI's reply (first line, truncated) once one exists,
   // falling back to the prompt while the response is still loading.
-  const responseFirstLine = node.response.split("\n")[0].trim();
-  const titleSource = responseFirstLine || node.prompt;
+  const responseFirstLine = response.split("\n")[0].trim();
+  const titleSource = responseFirstLine || prompt;
   const titleSnippet =
     titleSource.length > 48 ? titleSource.slice(0, 48) + "…" : titleSource;
 
   return (
     <div
-      ref={nodeRef}
       style={{
-        /* Dynamic positioning lives here — everything else is Tailwind */
-        position: "absolute",
-        left: node.x,
-        top: node.y,
         width: 380,
-        background: hasTint ? node.color : "var(--color-surface-overlay)",
-        userSelect: "none",
-      }}
-      onClick={(e) => {
-        e.stopPropagation();
-        onSelect();
+        background: hasTint ? color : "var(--color-surface-overlay)",
       }}
       className={cn(
-        "animate-node-in pointer-events-auto rounded-xl border font-sans cursor-pointer",
-        "transition-[box-shadow,border-color] duration-200",
-        isActive || isSelected
-          ? "border-accent z-20 shadow-card-active"
-          : "border-border z-[5] shadow-card",
+        "animate-node-in font-sans cursor-pointer",
+        "transition-[box-shadow,border-color] duration-200 rounded-xl border",
+        isBranchActive || selected
+          ? "border-accent shadow-card-active"
+          : "border-border shadow-card",
       )}
     >
+      <Handle type="target" position={Position.Top} id="branchTarget" isConnectable={false} style={HANDLE_STYLE} />
+      <Handle type="source" position={Position.Bottom} id="branchSource" isConnectable={false} style={HANDLE_STYLE} />
+      <Handle type="target" position={Position.Left} id="linkTarget" isConnectable={false} style={HANDLE_STYLE} />
+      <Handle type="source" position={Position.Right} id="linkSource" isConnectable={false} style={HANDLE_STYLE} />
+
       {/* ── Header / drag handle — click anywhere on it to collapse/expand ── */}
       <div
-        onMouseDown={startDrag}
-        onClick={() => {
-          if (!hasDragged.current) onToggleMinimize();
-        }}
+        onClick={onToggleMinimize}
         className={cn(
-          "flex items-center gap-2 px-3 py-2.5 cursor-pointer active:cursor-grabbing",
-          !node.minimized && "border-b border-border-subtle",
+          "drag-handle flex items-center gap-2 px-3 py-2.5 cursor-grab active:cursor-grabbing",
+          !minimized && "border-b border-border-subtle",
         )}
       >
         {/* Grip handle */}
@@ -306,7 +169,7 @@ export default function ConversationNode({
         <button
           onClick={(e) => {
             e.stopPropagation();
-            onFocus();
+            onFocusNode();
           }}
           className={cn(
             "shrink-0 opacity-40 hover:opacity-100 transition-opacity bg-transparent border-none cursor-pointer p-0.5",
@@ -321,7 +184,7 @@ export default function ConversationNode({
         <button
           onClick={(e) => {
             e.stopPropagation();
-            onExpand();
+            onExpandNode();
           }}
           className={cn(
             "shrink-0 opacity-40 hover:opacity-100 transition-opacity bg-transparent border-none cursor-pointer p-0.5",
@@ -345,10 +208,10 @@ export default function ConversationNode({
             "shrink-0 px-0.5 opacity-60 hover:opacity-100 transition-opacity bg-transparent border-none cursor-pointer",
             mutedCls,
           )}
-          title={node.minimized ? "Expand" : "Collapse"}
+          title={minimized ? "Expand" : "Collapse"}
         >
           <FontAwesomeIcon
-            icon={node.minimized ? faChevronDown : faChevronUp}
+            icon={minimized ? faChevronDown : faChevronUp}
             className="w-2.5 h-2.5"
           />
         </button>
@@ -356,23 +219,17 @@ export default function ConversationNode({
 
       {/* ── Animated body — collapses to a 30% peek with a fade-out gradient ── */}
       <div
-        className="relative overflow-hidden transition-[height] duration-[280ms] ease-[cubic-bezier(0.4,0,0.2,1)]"
+        className="relative overflow-hidden transition-[height] duration-[280ms] ease-[cubic-bezier(0.4,0,0.2,1)] nodrag"
         style={{
-          height: node.minimized ? bodyHeight * 0.4 : bodyHeight || "auto",
+          height: minimized ? bodyHeight * 0.4 : bodyHeight || "auto",
         }}
       >
-        {/* When selected the body is also a drag target.
-            Max-height + scroll keeps cards compact; modal icon gives access to full text. */}
         <div
           ref={bodyRef}
-          className={cn(
-            "cc-scroll overflow-y-auto max-h-72 px-3.5 pt-2.5 pb-3.5",
-            isSelected && "cursor-grab",
-          )}
-          onMouseDown={isSelected ? startDrag : undefined}
+          className="cc-scroll overflow-y-auto max-h-72 px-3.5 pt-2.5 pb-3.5 cursor-auto"
         >
           {/* Branch-from chip */}
-          {node.parentId && parentPrompt && (
+          {branchParentPromptPreview && (
             <div
               className={cn(
                 "inline-flex items-center gap-1 text-[11px] rounded-full px-2 py-0.5 mb-2.5 max-w-full truncate",
@@ -387,8 +244,8 @@ export default function ConversationNode({
                 icon={faCodeBranch}
                 className="text-accent w-2 h-2"
               />
-              {parentPrompt.slice(0, 42)}
-              {parentPrompt.length > 42 ? "…" : ""}
+              {branchParentPromptPreview.slice(0, 42)}
+              {branchParentPromptPreview.length > 42 ? "…" : ""}
             </div>
           )}
 
@@ -403,7 +260,7 @@ export default function ConversationNode({
               You
             </p>
             <p className={cn("text-[14.5px] leading-relaxed m-0", textCls)}>
-              {node.prompt}
+              {prompt}
             </p>
           </div>
 
@@ -415,7 +272,7 @@ export default function ConversationNode({
             <p className="text-[10px] font-bold uppercase tracking-[0.08em] mb-1 text-accent">
               AI
             </p>
-            {node.loading ? (
+            {loading ? (
               <div className="flex items-center gap-2 text-[14.5px] text-foreground-muted">
                 <span className="flex gap-[3px]">
                   {[0, 0.15, 0.3].map((delay, i) => (
@@ -435,7 +292,7 @@ export default function ConversationNode({
                   mutedCls,
                 )}
               >
-                {node.response}
+                {response}
               </p>
             )}
           </div>
@@ -446,38 +303,27 @@ export default function ConversationNode({
           aria-hidden
           className={cn(
             "pointer-events-none absolute inset-x-0 bottom-0 h-14 transition-opacity duration-200",
-            node.minimized ? "opacity-100" : "opacity-0",
+            minimized ? "opacity-100" : "opacity-0",
           )}
           style={{
-            background: `linear-gradient(to bottom, transparent, ${hasTint ? node.color : "var(--color-surface-overlay)"})`,
+            background: `linear-gradient(to bottom, transparent, ${hasTint ? color : "var(--color-surface-overlay)"})`,
           }}
         />
       </div>
 
       {/* ── Actions footer — fixed like the header, never scrolls or collapses ── */}
-      <div className="px-3.5 pt-2.5 pb-4 border-t border-border-subtle">
+      <div className="nodrag cursor-auto px-3.5 pt-2.5 pb-4 border-t border-border-subtle">
         <div className="flex items-center gap-1.5 flex-wrap">
-          <NBtn
-            active={isActive}
-            onClick={(e) => {
-              e.stopPropagation();
-              onBranch();
-            }}
-          >
+          <NBtn active={isBranchActive} onClick={onToggleBranch}>
             <FontAwesomeIcon icon={faCodeBranch} className="w-2.5 h-2.5" />
-            {isActive ? "Branching…" : "Branch"}
+            {isBranchActive ? "Branching…" : "Branch"}
           </NBtn>
 
-          <NBtn
-            onClick={(e) => {
-              e.stopPropagation();
-              setShowColors((s) => !s);
-            }}
-          >
+          <NBtn onClick={() => setShowColors((s) => !s)}>
             <span
               className="inline-block w-2.5 h-2.5 rounded-full shrink-0"
               style={{
-                background: node.color,
+                background: color,
                 border: "1.5px solid rgba(0,0,0,0.15)",
               }}
             />
@@ -487,10 +333,7 @@ export default function ConversationNode({
 
         {/* Color swatches */}
         {showColors && (
-          <div
-            className="flex gap-1.5 mt-2 flex-wrap"
-            onClick={(e) => e.stopPropagation()}
-          >
+          <div className="flex gap-1.5 mt-2 flex-wrap">
             {SWATCHES.map(({ label, value }) => (
               <button
                 key={value}
@@ -503,10 +346,10 @@ export default function ConversationNode({
                 style={{
                   background: value,
                   outline:
-                    node.color === value
+                    color === value
                       ? "2px solid var(--color-accent)"
                       : "1.5px solid rgba(0,0,0,0.15)",
-                  outlineOffset: node.color === value ? "2px" : "0",
+                  outlineOffset: color === value ? "2px" : "0",
                 }}
               />
             ))}

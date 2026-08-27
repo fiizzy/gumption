@@ -1,15 +1,36 @@
 'use client';
 
-import { useState, useRef, useCallback, useEffect } from 'react';
+import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
+import type { MouseEvent as ReactMouseEvent } from 'react';
+import {
+  ReactFlow,
+  ReactFlowProvider,
+  Background,
+  BackgroundVariant,
+  applyNodeChanges,
+  useReactFlow,
+  useViewport,
+  type NodeChange,
+} from '@xyflow/react';
+import '@xyflow/react/dist/style.css';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import { faCodeBranch, faLayerGroup, faXmark } from '@fortawesome/free-solid-svg-icons';
-import ConversationNode, { DEFAULT_COLOR } from './ConversationNode';
-import CanvasElementView from './CanvasElement';
+import ConversationNodeComponent, { DEFAULT_COLOR } from './ConversationNode';
+import CanvasElementComponent from './CanvasElement';
+import { BranchEdgeComponent, LinkEdgeComponent, CanvasEdgeMarkerDefs } from './CanvasEdges';
 import ChatInput from './ChatInput';
 import Joystick from './Joystick';
 import Toolbar, { TOOLBAR_H } from './Toolbar';
 import type { Mode } from './Toolbar';
-import { NodeData, NodeDims, CanvasElementData } from '../types';
+import {
+  CanvasNode,
+  ConversationNode as ConversationNodeState,
+  TextElementNode,
+  ShapeElementNode,
+  HydratedCanvasNode,
+  CanvasEdge,
+  ShapeKind,
+} from '../types';
 import { simulateAI } from '../lib/ai';
 
 const NODE_W     = 380;
@@ -17,51 +38,64 @@ const NODE_H_EST = 220;
 const SCALE_MIN  = 0.1;
 const SCALE_MAX  = 4;
 
-function easeOutCubic(t: number) { return 1 - Math.pow(1 - t, 3); }
-
 const MODE_LABEL: Record<Mode, string> = {
   select: 'Select mode', pan: 'Pan mode', text: 'Text mode',
   'shape-square': 'Square tool', 'shape-circle': 'Circle tool',
 };
 
+// Module-level so identity is stable across renders — xyflow re-measures
+// and re-warns if nodeTypes/edgeTypes objects change identity every pass.
+const nodeTypes = {
+  conversation: ConversationNodeComponent,
+  textElement: CanvasElementComponent,
+  shapeElement: CanvasElementComponent,
+};
+const edgeTypes = {
+  branch: BranchEdgeComponent,
+  link: LinkEdgeComponent,
+};
+
 interface ModalContent { prompt: string; response: string; parentPrompt?: string; }
 
 export default function CanvasChat() {
-  const [nodes, setNodes]             = useState<NodeData[]>([]);
-  const [elements, setElements]       = useState<CanvasElementData[]>([]);
+  return (
+    <ReactFlowProvider>
+      <CanvasChatInner />
+    </ReactFlowProvider>
+  );
+}
+
+function CanvasChatInner() {
+  const [nodes, setNodes]               = useState<CanvasNode[]>([]);
   const [activeNodeId, setActiveNodeId] = useState<string | null>(null);
-  const [nodeDims, setNodeDims]       = useState<Record<string, NodeDims>>({});
-  const [theme, setTheme]             = useState<'light' | 'dark'>('dark');
-  const [modal, setModal]             = useState<ModalContent | null>(null);
+  const [theme, setTheme]               = useState<'light' | 'dark'>('dark');
+  const [modal, setModal]               = useState<ModalContent | null>(null);
   const modalRef = useRef<ModalContent | null>(null);
   useEffect(() => { modalRef.current = modal; }, [modal]);
 
-  // ── Pan & scale ───────────────────────────────────────────────
-  const [pan, _setPan]     = useState({ x: 0, y: 0 });
-  const [scale, _setScale] = useState(1);
-  const panRef   = useRef({ x: 0, y: 0 });
-  const scaleRef = useRef(1);
-  const setPan = useCallback((p: { x: number; y: number }) => { panRef.current = p; _setPan(p); }, []);
-  const setScale = useCallback((s: number) => { scaleRef.current = s; _setScale(s); }, []);
+  const nodesRef = useRef<CanvasNode[]>([]);
+  useEffect(() => { nodesRef.current = nodes; }, [nodes]);
 
-  // ── Stale-closure-safe refs ───────────────────────────────────
-  const nodesRef    = useRef<NodeData[]>([]);
-  const elementsRef = useRef<CanvasElementData[]>([]);
-  const nodeDimsRef = useRef<Record<string, NodeDims>>({});
-  useEffect(() => { nodesRef.current    = nodes;    }, [nodes]);
-  useEffect(() => { elementsRef.current = elements; }, [elements]);
-  useEffect(() => { nodeDimsRef.current = nodeDims; }, [nodeDims]);
+  const {
+    getNode, getNodes, getViewport, setViewport, screenToFlowPosition, zoomIn, zoomOut,
+  } = useReactFlow<CanvasNode, CanvasEdge>();
+  const { zoom: currentZoom } = useViewport(); // reactive — drives the Toolbar's live percentage readout
 
-  // ── Selection state ───────────────────────────────────────────
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const selectedIdsRef = useRef<Set<string>>(new Set());
-  useEffect(() => { selectedIdsRef.current = selectedIds; }, [selectedIds]);
+  const canvasWrapperRef = useRef<HTMLDivElement>(null);
+  const getContainerCenter = useCallback(() => {
+    const rect = canvasWrapperRef.current?.getBoundingClientRect();
+    return {
+      centerX: (rect?.width ?? window.innerWidth) / 2,
+      centerY: (rect?.height ?? window.innerHeight - TOOLBAR_H) / 2,
+    };
+  }, []);
 
-  // ── Right-click selection rect (canvas-area coords) ──────────
-  interface SelectRect { x1: number; y1: number; x2: number; y2: number; }
-  const [selectRect, setSelectRect] = useState<SelectRect | null>(null);
-  const isSelecting  = useRef(false);
-  const selectStart  = useRef({ x: 0, y: 0 });
+  // Falls back to the estimated card size before a node has been measured
+  // (e.g. the instant it's created, one render before layout settles).
+  const getNodeDims = useCallback((id: string) => {
+    const node = getNode(id);
+    return { w: node?.measured?.width ?? NODE_W, h: node?.measured?.height ?? NODE_H_EST };
+  }, [getNode]);
 
   // ── Interaction mode: select vs pan ────────────────────────────
   // `mode` is the persistent tool, toggled by Tab (or the toolbar).
@@ -94,115 +128,86 @@ export default function CanvasChat() {
     setMode(modeRef.current === 'select' ? 'pan' : 'select');
   }, [setMode]);
 
-  // ── Group drag ────────────────────────────────────────────────
-  const groupInitPositions = useRef<Record<string, { x: number; y: number }>>({});
+  // ── Viewport navigation ──────────────────────────────────────
+  const centerOn = useCallback((worldX: number, worldY: number) => {
+    const { centerX, centerY } = getContainerCenter();
+    const zoom = getViewport().zoom;
+    setViewport({
+      x: centerX - (worldX + NODE_W / 2) * zoom,
+      y: centerY - (worldY + NODE_H_EST / 2) * zoom,
+      zoom,
+    }, { duration: 500 });
+  }, [getContainerCenter, getViewport, setViewport]);
 
-  const handleGroupDragStart = useCallback(() => {
-    const positions: Record<string, { x: number; y: number }> = {};
-    nodesRef.current.forEach((n) => {
-      if (selectedIdsRef.current.has(n.id)) positions[n.id] = { x: n.x, y: n.y };
+  const focusNode = useCallback((nodeId: string) => {
+    const node = getNode(nodeId);
+    if (!node) return;
+    const { w, h } = getNodeDims(nodeId);
+    const { centerX, centerY } = getContainerCenter();
+    setViewport({
+      x: centerX - (node.position.x + w / 2),
+      y: centerY - (node.position.y + h / 2),
+      zoom: 1,
+    }, { duration: 500 });
+  }, [getNode, getNodeDims, getContainerCenter, setViewport]);
+
+  // Centres the centroid of all nodes at 100% zoom (deliberately not
+  // xyflow's bounding-box fitView — this keeps the original fit-all feel).
+  const fitAll = useCallback(() => {
+    const allNodes = getNodes();
+    if (!allNodes.length) return;
+    let centroidSumX = 0, centroidSumY = 0;
+    allNodes.forEach((node) => {
+      const { w, h } = getNodeDims(node.id);
+      centroidSumX += node.position.x + w / 2;
+      centroidSumY += node.position.y + h / 2;
     });
-    elementsRef.current.forEach((el) => {
-      if (selectedIdsRef.current.has(el.id)) positions[el.id] = { x: el.x, y: el.y };
-    });
-    groupInitPositions.current = positions;
-  }, []);
+    const centroidX = centroidSumX / allNodes.length;
+    const centroidY = centroidSumY / allNodes.length;
+    const { centerX, centerY } = getContainerCenter();
+    setViewport({ x: centerX - centroidX, y: centerY - centroidY, zoom: 1 }, { duration: 500 });
+  }, [getNodes, getNodeDims, getContainerCenter, setViewport]);
 
-  const handleGroupMove = useCallback((dx: number, dy: number) => {
-    setNodes((prev) => prev.map((n) => {
-      const init = groupInitPositions.current[n.id];
-      return init ? { ...n, x: init.x + dx, y: init.y + dy } : n;
-    }));
-    setElements((prev) => prev.map((el) => {
-      const init = groupInitPositions.current[el.id];
-      return init ? { ...el, x: init.x + dx, y: init.y + dy } : el;
-    }));
-  }, []);
+  const resetZoomKeepingCenter = useCallback(() => {
+    const { centerX, centerY } = getContainerCenter();
+    const viewport = getViewport();
+    setViewport({
+      x: centerX - (centerX - viewport.x) / viewport.zoom,
+      y: centerY - (centerY - viewport.y) / viewport.zoom,
+      zoom: 1,
+    }, { duration: 300 });
+  }, [getContainerCenter, getViewport, setViewport]);
 
-  // ── Animation ─────────────────────────────────────────────────
-  const animFrameRef = useRef(0);
-  const animateToView = useCallback((targetPanX: number, targetPanY: number, targetScale?: number) => {
-    cancelAnimationFrame(animFrameRef.current);
-    const startX = panRef.current.x, startY = panRef.current.y, startS = scaleRef.current;
-    const endS = targetScale ?? startS;
-    const t0 = performance.now(), dur = 500;
-    const tick = (now: number) => {
-      const t = Math.min((now - t0) / dur, 1), e = easeOutCubic(t);
-      setPan({ x: startX + (targetPanX - startX) * e, y: startY + (targetPanY - startY) * e });
-      if (targetScale !== undefined) setScale(startS + (endS - startS) * e);
-      if (t < 1) animFrameRef.current = requestAnimationFrame(tick);
-    };
-    animFrameRef.current = requestAnimationFrame(tick);
-  }, [setPan, setScale]);
-
-  const centerOn = useCallback((wx: number, wy: number) => {
-    const vw = window.innerWidth, vh = window.innerHeight, s = scaleRef.current;
-    animateToView(vw / 2 - (wx + NODE_W / 2) * s, (vh - TOOLBAR_H) / 2 - (wy + NODE_H_EST / 2) * s);
-  }, [animateToView]);
-
-  // ── Zoom ──────────────────────────────────────────────────────
-  const zoomAt = useCallback((cx: number, cy: number, factor: number) => {
-    const cay = cy - TOOLBAR_H;
-    const newScale = Math.max(SCALE_MIN, Math.min(SCALE_MAX, scaleRef.current * factor));
-    const ratio = newScale / scaleRef.current;
-    setPan({ x: cx - (cx - panRef.current.x) * ratio, y: cay - (cay - panRef.current.y) * ratio });
-    setScale(newScale);
-  }, [setPan, setScale]);
-
-  useEffect(() => {
-    const insideScrollable = (target: EventTarget | null, dy: number): boolean => {
-      let el = target instanceof Element ? target : null;
-      while (el && el !== document.body) {
-        const { overflowY } = getComputedStyle(el);
-        if (overflowY === 'auto' || overflowY === 'scroll') {
-          const canScrollUp   = dy < 0 && el.scrollTop > 0;
-          const canScrollDown = dy > 0 && el.scrollTop + el.clientHeight < el.scrollHeight;
-          if (canScrollUp || canScrollDown) return true;
-        }
-        el = el.parentElement;
-      }
-      return false;
-    };
-
-    const onWheel = (e: WheelEvent) => {
-      if (modalRef.current) return; // modal open — let it (or nothing) handle the scroll natively
-      if (e.target instanceof HTMLInputElement) return;
-      if (insideScrollable(e.target, e.deltaY)) return;
-      e.preventDefault();
-      cancelAnimationFrame(animFrameRef.current);
-      zoomAt(e.clientX, e.clientY, Math.exp(-e.deltaY * 0.0008));
-    };
-    window.addEventListener('wheel', onWheel, { passive: false });
-    return () => window.removeEventListener('wheel', onWheel);
-  }, [zoomAt]);
-
-  // ── Keyboard: zoom shortcuts + Tab-to-toggle-mode + hold-Space-to-pan ──
+  // ── Keyboard: zoom shortcuts + Tab-to-toggle-mode + hold-Space-to-pan + Delete ──
   useEffect(() => {
     const isTyping = (target: EventTarget | null) =>
       target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement;
 
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') { setModal(null); return; }
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') { setModal(null); return; }
+
       // Delete/Backspace — remove selected canvas elements (text/shapes only, never chat nodes)
-      if ((e.key === 'Delete' || e.key === 'Backspace') && !isTyping(e.target) && selectedIdsRef.current.size > 0) {
-        const elIds = new Set(elementsRef.current.map((el) => el.id));
-        const toDelete = [...selectedIdsRef.current].filter((id) => elIds.has(id));
-        if (toDelete.length > 0) {
-          e.preventDefault();
-          setElements((p) => p.filter((el) => !toDelete.includes(el.id)));
-          setSelectedIds((prev) => { const n = new Set(prev); toDelete.forEach((id) => n.delete(id)); return n; });
+      if ((event.key === 'Delete' || event.key === 'Backspace') && !isTyping(event.target)) {
+        const deletableIds = nodesRef.current
+          .filter((node) => node.selected && node.type !== 'conversation')
+          .map((node) => node.id);
+        if (deletableIds.length > 0) {
+          event.preventDefault();
+          setNodes((prev) => prev.filter((node) => !deletableIds.includes(node.id)));
         }
         return;
       }
+
       // Tab — toggle the persistent select/pan tool; skip if user is typing in a form field
-      if (e.code === 'Tab' && !e.repeat && !isTyping(e.target)) {
-        e.preventDefault();
+      if (event.code === 'Tab' && !event.repeat && !isTyping(event.target)) {
+        event.preventDefault();
         toggleMode();
         return;
       }
+
       // Space (held) — temporarily force pan mode; skip if user is typing in a form field
-      if (e.code === 'Space' && !e.repeat && !isTyping(e.target)) {
-        e.preventDefault();
+      if (event.code === 'Space' && !event.repeat && !isTyping(event.target)) {
+        event.preventDefault();
         if (!spaceDownRef.current) {
           spaceDownRef.current = true;
           setIsSpaceDown(true);
@@ -210,308 +215,264 @@ export default function CanvasChat() {
         }
         return;
       }
-      if (!(e.ctrlKey || e.metaKey)) return;
-      const cx = window.innerWidth / 2, cy = window.innerHeight / 2;
-      if (e.key === '=' || e.key === '+') { e.preventDefault(); zoomAt(cx, cy, 1.25); }
-      if (e.key === '-')                   { e.preventDefault(); zoomAt(cx, cy, 0.8); }
-      if (e.key === '0') {
-        e.preventDefault();
-        const s = scaleRef.current, cay = cy - TOOLBAR_H;
-        animateToView(cx - (cx - panRef.current.x) / s, cay - (cay - panRef.current.y) / s, 1);
-      }
+
+      if (!(event.ctrlKey || event.metaKey)) return;
+      if (event.key === '=' || event.key === '+') { event.preventDefault(); zoomIn({ duration: 200 }); }
+      if (event.key === '-')                      { event.preventDefault(); zoomOut({ duration: 200 }); }
+      if (event.key === '0')                      { event.preventDefault(); resetZoomKeepingCenter(); }
     };
-    const onKeyUp = (e: KeyboardEvent) => {
-      if (e.code === 'Space' && spaceDownRef.current) {
+
+    const onKeyUp = (event: KeyboardEvent) => {
+      if (event.code === 'Space' && spaceDownRef.current) {
         spaceDownRef.current = false;
         setIsSpaceDown(false);
         if (modeRef.current === 'select') announceMode('Select mode');
       }
     };
+
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
     return () => { window.removeEventListener('keydown', onKeyDown); window.removeEventListener('keyup', onKeyUp); };
-  }, [zoomAt, animateToView, toggleMode, announceMode]);
+  }, [toggleMode, announceMode, zoomIn, zoomOut, resetZoomKeepingCenter]);
 
-  // ── Panning state ─────────────────────────────────────────────
-  const isPanning  = useRef(false);
-  const panStart   = useRef({ mx: 0, my: 0, px: 0, py: 0 });
-
-  const startPan = (mx: number, my: number) => {
-    cancelAnimationFrame(animFrameRef.current);
-    isPanning.current = true;
-    panStart.current  = { mx, my, px: panRef.current.x, py: panRef.current.y };
-  };
-
-  // ── Global mouse move + up (pan, selection rect) ──────────────
-  useEffect(() => {
-    const onMove = (e: MouseEvent) => {
-      if (isPanning.current) {
-        setPan({
-          x: panStart.current.px + (e.clientX - panStart.current.mx),
-          y: panStart.current.py + (e.clientY - panStart.current.my),
-        });
-      }
-      if (isSelecting.current) {
-        setSelectRect({ x1: selectStart.current.x, y1: selectStart.current.y,
-                        x2: e.clientX, y2: e.clientY - TOOLBAR_H });
-      }
-    };
-
-    const onUp = (e: MouseEvent) => {
-      isPanning.current = false;
-
-      if (isSelecting.current) {
-        isSelecting.current = false;
-        const dx = Math.abs(e.clientX - selectStart.current.x);
-        const dy = Math.abs(e.clientY - TOOLBAR_H - selectStart.current.y);
-
-        if (dx > 5 || dy > 5) {
-          // Real drag — hit-test nodes that intersect the rect
-          const selLeft   = Math.min(selectStart.current.x, e.clientX);
-          const selTop    = Math.min(selectStart.current.y, e.clientY - TOOLBAR_H);
-          const selRight  = Math.max(selectStart.current.x, e.clientX);
-          const selBottom = Math.max(selectStart.current.y, e.clientY - TOOLBAR_H);
-          const s = scaleRef.current, p = panRef.current;
-          const hit = new Set<string>();
-          nodesRef.current.forEach((n) => {
-            const d  = nodeDimsRef.current[n.id] ?? { w: NODE_W, h: NODE_H_EST };
-            const nl = n.x * s + p.x, nt = n.y * s + p.y;
-            const nr = nl + d.w * s,  nb = nt + d.h * s;
-            if (nl < selRight && nr > selLeft && nt < selBottom && nb > selTop) hit.add(n.id);
-          });
-          elementsRef.current.forEach((el) => {
-            const d  = nodeDimsRef.current[el.id] ?? { w: 140, h: 140 };
-            const nl = el.x * s + p.x, nt = el.y * s + p.y;
-            const nr = nl + d.w * s,  nb = nt + d.h * s;
-            if (nl < selRight && nr > selLeft && nt < selBottom && nb > selTop) hit.add(el.id);
-          });
-          setSelectedIds(hit);
-        } else {
-          // Bare click on canvas — clear selection
-          setSelectedIds(new Set());
-        }
-        setSelectRect(null);
-      }
-    };
-
-    window.addEventListener('mousemove', onMove);
-    window.addEventListener('mouseup',   onUp);
-    return () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
-  }, [setPan]);
-
-  // ── Background mousedown ──────────────────────────────────────
-  // Left-drag  → selection rect (Figma-style), select mode only
-  // Middle-drag → pan
-  // Pan mode    → every drag pans (handled by the full-canvas overlay below)
-  const handleBgMouseDown = (e: React.MouseEvent) => {
-    if (e.button === 1) {
-      // Middle-click → pan
-      e.preventDefault();
-      startPan(e.clientX, e.clientY);
-      return;
-    }
-    if (e.button !== 0) return;
-    if (e.target !== e.currentTarget) return;
-
-    if (mode === 'text' || mode === 'shape-square' || mode === 'shape-circle') {
-      e.preventDefault();
-      const s = scaleRef.current, p = panRef.current;
-      const wx = (e.clientX - p.x) / s;
-      const wy = (e.clientY - TOOLBAR_H - p.y) / s;
-      addElement(mode, wx, wy);
-      return;
-    }
-
-    // Left-click drag on empty canvas → draw selection rect
-    cancelAnimationFrame(animFrameRef.current);
-    isSelecting.current = true;
-    selectStart.current = { x: e.clientX, y: e.clientY - TOOLBAR_H };
-    setSelectRect({ x1: e.clientX, y1: e.clientY - TOOLBAR_H, x2: e.clientX, y2: e.clientY - TOOLBAR_H });
-  };
-
-  // ── Joystick pan ─────────────────────────────────────────────
-  // Must NOT use the setPan wrapper here — that wrapper does
-  // `panRef.current = p` literally, so passing a function would
-  // corrupt panRef and break all subsequent position calculations.
-  const handleJoystickPan = useCallback((dx: number, dy: number) => {
-    const next = { x: panRef.current.x + dx, y: panRef.current.y + dy };
-    panRef.current = next;   // keep ref in sync immediately
-    _setPan(next);           // trigger re-render
+  // ── xyflow-driven node changes: position (drag), measured size, selection ──
+  const onNodesChange = useCallback((changes: NodeChange<CanvasNode>[]) => {
+    setNodes((prev) => applyNodeChanges(changes, prev));
   }, []);
 
-  // ── Node click-to-select ─────────────────────────────────────
-  const handleNodeSelect = useCallback((nodeId: string) => {
-    setSelectedIds(new Set([nodeId]));
-  }, []);
+  // ── Shared data-field updaters ─────────────────────────────────
+  const updateColor = useCallback((id: string, color: string) =>
+    setNodes((prev) => prev.map((node) =>
+      node.id === id ? ({ ...node, data: { ...node.data, color } } as CanvasNode) : node,
+    )), []);
 
-  // ── Node helpers ──────────────────────────────────────────────
-  const updateNodePos = useCallback((id: string, x: number, y: number) =>
-    setNodes((p) => p.map((n) => n.id === id ? { ...n, x, y } : n)), []);
-  const updateNodeColor = useCallback((id: string, color: string) =>
-    setNodes((p) => p.map((n) => n.id === id ? { ...n, color } : n)), []);
   const toggleMinimize = useCallback((id: string) =>
-    setNodes((p) => p.map((n) => n.id === id ? { ...n, minimized: !n.minimized } : n)), []);
-  const updateDims = useCallback((id: string, w: number, h: number) =>
-    setNodeDims((p) => ({ ...p, [id]: { w, h } })), []);
+    setNodes((prev) => prev.map((node) =>
+      node.id === id && node.type === 'conversation'
+        ? { ...node, data: { ...node.data, minimized: !node.data.minimized } }
+        : node,
+    )), []);
 
-  // ── Canvas element (text / shape) helpers ──────────────────────
-  const updateElementPos = useCallback((id: string, x: number, y: number) =>
-    setElements((p) => p.map((el) => el.id === id ? { ...el, x, y } : el)), []);
   const updateElementText = useCallback((id: string, text: string) =>
-    setElements((p) => p.map((el) => el.id === id ? { ...el, text } : el)), []);
-  const updateElementColor = useCallback((id: string, color: string) =>
-    setElements((p) => p.map((el) => el.id === id ? { ...el, color } : el)), []);
-  const deleteElement = useCallback((id: string) => {
-    setElements((p) => p.filter((el) => el.id !== id));
-    setSelectedIds((prev) => { if (!prev.has(id)) return prev; const n = new Set(prev); n.delete(id); return n; });
-  }, []);
+    setNodes((prev) => prev.map((node) =>
+      node.id === id && node.type === 'textElement'
+        ? { ...node, data: { ...node.data, text } }
+        : node,
+    )), []);
 
-  const [autoEditId, setAutoEditId] = useState<string | null>(null);
+  const deleteElement = useCallback((id: string) =>
+    setNodes((prev) => prev.filter((node) => node.id !== id)), []);
 
-  const addElement = useCallback((toolMode: 'text' | 'shape-square' | 'shape-circle', wx: number, wy: number) => {
-    const id = crypto.randomUUID();
-    if (toolMode === 'text') {
-      const w = 200;
-      const el: CanvasElementData = { id, type: 'text', x: wx - w / 2, y: wy - 12, text: '', color: DEFAULT_COLOR };
-      setElements((p) => [...p, el]);
-      setAutoEditId(id);
-    } else {
-      const shapeKind = toolMode === 'shape-square' ? 'square' : 'circle';
-      const half = 70; // half of CanvasElement's fixed SHAPE_SIZE (140) — centers the shape on the click
-      const el: CanvasElementData = { id, type: 'shape', shapeKind, x: wx - half, y: wy - half, text: '', color: '#93c5fd' };
-      setElements((p) => [...p, el]);
+  // Nudges a candidate spot straight down, step by step, until its box (using
+  // each existing chat node's real measured size where known) no longer
+  // overlaps any existing chat node — so branch/chain placement never lands
+  // a fresh node on top of one that's already there. Only checks against
+  // other chat nodes, matching the original behavior of never dodging
+  // freeform text/shape elements.
+  const findFreeSpot = useCallback((x: number, y: number, w: number, h: number) => {
+    const GAP = 24;
+    let nextY = y;
+    for (let tries = 0; tries < 200; tries++) {
+      const collides = nodesRef.current.some((node) => {
+        if (node.type !== 'conversation') return false;
+        const { w: nodeW, h: nodeH } = getNodeDims(node.id);
+        return x < node.position.x + nodeW + GAP && x + w + GAP > node.position.x &&
+               nextY < node.position.y + nodeH + GAP && nextY + h + GAP > node.position.y;
+      });
+      if (!collides) break;
+      nextY += NODE_H_EST + GAP;
     }
-    setSelectedIds(new Set([id]));
+    return { x, y: nextY };
+  }, [getNodeDims]);
+
+  // ── Add a freeform text/shape element ───────────────────────────
+  const addElement = useCallback((toolMode: 'text' | 'shape-square' | 'shape-circle', worldX: number, worldY: number) => {
+    const elementId = crypto.randomUUID();
+    const deselectRest = (prev: CanvasNode[]) => prev.map((node) => (node.selected ? { ...node, selected: false } : node));
+
+    if (toolMode === 'text') {
+      const width = 200;
+      const newTextNode: TextElementNode = {
+        id: elementId,
+        type: 'textElement',
+        position: { x: worldX - width / 2, y: worldY - 12 },
+        selected: true,
+        data: { text: '', color: DEFAULT_COLOR, autoEdit: true },
+      };
+      setNodes((prev) => [...deselectRest(prev), newTextNode]);
+    } else {
+      const shapeKind: ShapeKind = toolMode === 'shape-square' ? 'square' : 'circle';
+      const halfSize = 70; // half of CanvasElement's fixed SHAPE_SIZE (140) — centers the shape on the click
+      const newShapeNode: ShapeElementNode = {
+        id: elementId,
+        type: 'shapeElement',
+        position: { x: worldX - halfSize, y: worldY - halfSize },
+        selected: true,
+        data: { shapeKind, color: '#93c5fd' },
+      };
+      setNodes((prev) => [...deselectRest(prev), newShapeNode]);
+    }
     setMode('select');
   }, [setMode]);
 
-  // Nudges a candidate spot straight down, step by step, until its box
-  // (using each existing node's real measured size where known) no longer
-  // overlaps any existing node — so branch/chain placement never lands a
-  // fresh node on top of one that's already there.
-  const findFreeSpot = useCallback((x: number, y: number, w: number, h: number) => {
-    const all = nodesRef.current, dims = nodeDimsRef.current;
-    const GAP = 24;
-    let ny = y;
-    for (let tries = 0; tries < 200; tries++) {
-      const collides = all.some((n) => {
-        const d = dims[n.id] ?? { w: NODE_W, h: NODE_H_EST };
-        return x < n.x + d.w + GAP && x + w + GAP > n.x &&
-               ny < n.y + d.h + GAP && ny + h + GAP > n.y;
-      });
-      if (!collides) break;
-      ny += NODE_H_EST + GAP;
+  const onPaneClick = useCallback((event: ReactMouseEvent) => {
+    if (mode === 'text' || mode === 'shape-square' || mode === 'shape-circle') {
+      const worldPosition = screenToFlowPosition({ x: event.clientX, y: event.clientY });
+      addElement(mode, worldPosition.x, worldPosition.y);
+      return;
     }
-    return { x, y: ny };
-  }, []);
+    // Safety net — xyflow already clears selection on a bare pane click,
+    // this just guarantees it regardless of internal version behavior.
+    setNodes((prev) => prev.map((node) => (node.selected ? { ...node, selected: false } : node)));
+  }, [mode, screenToFlowPosition, addElement]);
 
-  // ── Add node ──────────────────────────────────────────────────
+  // ── Add a chat node + call the AI ───────────────────────────────
   const addNode = async (prompt: string) => {
-    const id = crypto.randomUUID();
-    const parentId = activeNodeId;
-    const all = nodesRef.current, dims = nodeDimsRef.current, s = scaleRef.current;
+    const nodeId = crypto.randomUUID();
+    const branchParentId = activeNodeId;
+    const allNodes = nodesRef.current;
+    const conversationNodes = allNodes.filter((node): node is ConversationNodeState => node.type === 'conversation');
 
     let x: number, y: number;
-    if (parentId) {
-      const parent = all.find((n) => n.id === parentId);
-      if (parent) {
-        const pd = dims[parentId] ?? { w: NODE_W, h: NODE_H_EST };
-        const siblings = all.filter((n) => n.parentId === parentId).length;
-        x = parent.x + pd.w + 52; y = parent.y + siblings * (NODE_H_EST + 24);
+    if (branchParentId) {
+      const branchParentNode = conversationNodes.find((node) => node.id === branchParentId);
+      if (branchParentNode) {
+        const { w: parentW } = getNodeDims(branchParentId);
+        const siblingCount = conversationNodes.filter((node) => node.data.branchParentId === branchParentId).length;
+        x = branchParentNode.position.x + parentW + 52;
+        y = branchParentNode.position.y + siblingCount * (NODE_H_EST + 24);
       } else { x = 80; y = 80; }
-    } else if (all.length > 0) {
-      const last = all[all.length - 1];
-      const ld = dims[last.id] ?? { w: NODE_W, h: NODE_H_EST };
-      x = last.x + ld.w + 52; y = last.y;
+    } else if (conversationNodes.length > 0) {
+      const lastNode = conversationNodes[conversationNodes.length - 1];
+      const { w: lastW } = getNodeDims(lastNode.id);
+      x = lastNode.position.x + lastW + 52;
+      y = lastNode.position.y;
     } else {
-      const vw = window.innerWidth, vh = window.innerHeight;
-      x = (vw / 2 - panRef.current.x) / s - NODE_W    / 2;
-      y = ((vh - TOOLBAR_H) / 2 - panRef.current.y) / s - NODE_H_EST / 2;
+      const { centerX, centerY } = getContainerCenter();
+      const viewport = getViewport();
+      x = (centerX - viewport.x) / viewport.zoom - NODE_W / 2;
+      y = (centerY - viewport.y) / viewport.zoom - NODE_H_EST / 2;
     }
     ({ x, y } = findFreeSpot(x, y, NODE_W, NODE_H_EST));
 
-    const linkedFromId = !parentId && all.length > 0 ? all[all.length - 1].id : null;
-    const parentColor = parentId ? all.find((n) => n.id === parentId)?.color : undefined;
-    setNodes((p) => [...p, { id, parentId, linkedFromId, prompt, response: '', x, y, color: parentColor ?? '#f8fafc', minimized: false, loading: true }]);
+    const linkedFromId = !branchParentId && conversationNodes.length > 0
+      ? conversationNodes[conversationNodes.length - 1].id
+      : null;
+    const branchParentNode = branchParentId ? conversationNodes.find((node) => node.id === branchParentId) : undefined;
+
+    const newConversationNode: ConversationNodeState = {
+      id: nodeId,
+      type: 'conversation',
+      position: { x, y },
+      selected: true,
+      data: {
+        prompt, response: '', loading: true, minimized: false,
+        color: branchParentNode?.data.color ?? DEFAULT_COLOR,
+        branchParentId, linkedFromId,
+      },
+    };
+    setNodes((prev) => [...prev.map((node) => (node.selected ? { ...node, selected: false } : node)), newConversationNode]);
     setActiveNodeId(null);
-    setSelectedIds(new Set([id])); // auto-highlight the new node
     centerOn(x, y);
 
-    const parent = parentId ? all.find((n) => n.id === parentId) : undefined;
     try {
-      const response = await simulateAI(prompt, parent?.prompt, parent?.response);
-      setNodes((p) => p.map((n) => n.id === id ? { ...n, response, loading: false } : n));
+      const response = await simulateAI(prompt, branchParentNode?.data.prompt, branchParentNode?.data.response);
+      setNodes((prev) => prev.map((node) =>
+        node.id === nodeId && node.type === 'conversation'
+          ? { ...node, data: { ...node.data, response, loading: false } }
+          : node,
+      ));
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      setNodes((p) => p.map((n) => n.id === id ? { ...n, response: `⚠ ${message}`, loading: false } : n));
+      setNodes((prev) => prev.map((node) =>
+        node.id === nodeId && node.type === 'conversation'
+          ? { ...node, data: { ...node.data, response: `⚠ ${message}`, loading: false } }
+          : node,
+      ));
     }
   };
 
-  // ── Focus a single node (centre + 100 % zoom) ────────────────
-  const focusNode = useCallback((nodeId: string) => {
-    const node = nodesRef.current.find((n) => n.id === nodeId);
-    if (!node) return;
-    const dims = nodeDimsRef.current[nodeId] ?? { w: NODE_W, h: NODE_H_EST };
-    const vw = window.innerWidth, vh = window.innerHeight;
-    animateToView(
-      vw / 2 - (node.x + dims.w / 2),
-      (vh - TOOLBAR_H) / 2 - (node.y + dims.h / 2),
-      1,
-    );
-  }, [animateToView]);
+  // ── Hydration — attaches derived values + interaction callbacks fresh
+  // every render, so nothing captured in persisted state can go stale ──
+  const flowNodes = useMemo<HydratedCanvasNode[]>(() => nodes.map((node): HydratedCanvasNode => {
+    if (node.type === 'conversation') {
+      const branchParentNode = node.data.branchParentId
+        ? nodes.find((candidate) => candidate.id === node.data.branchParentId)
+        : undefined;
+      const branchParentPromptPreview = branchParentNode?.type === 'conversation'
+        ? branchParentNode.data.prompt
+        : undefined;
+      return {
+        ...node,
+        dragHandle: '.drag-handle',
+        data: {
+          ...node.data,
+          branchParentPromptPreview,
+          isBranchActive: activeNodeId === node.id,
+          onToggleBranch: () => setActiveNodeId((prev) => (prev === node.id ? null : node.id)),
+          onFocusNode: () => focusNode(node.id),
+          onExpandNode: () => setModal({ prompt: node.data.prompt, response: node.data.response, parentPrompt: branchParentPromptPreview }),
+          onColorChange: (color: string) => updateColor(node.id, color),
+          onToggleMinimize: () => toggleMinimize(node.id),
+        },
+      };
+    }
+    if (node.type === 'textElement') {
+      return {
+        ...node,
+        data: {
+          ...node.data,
+          onTextChange: (text: string) => updateElementText(node.id, text),
+          onColorChange: (color: string) => updateColor(node.id, color),
+          onDeleteElement: () => deleteElement(node.id),
+        },
+      };
+    }
+    return {
+      ...node,
+      data: {
+        ...node.data,
+        onColorChange: (color: string) => updateColor(node.id, color),
+        onDeleteElement: () => deleteElement(node.id),
+      },
+    };
+  }), [nodes, activeNodeId, focusNode, updateColor, toggleMinimize, updateElementText, deleteElement]);
 
-  // ── Fit all — centres the centroid of all nodes at 100 % zoom ──
-  const fitAll = useCallback(() => {
-    const all = nodesRef.current, dims = nodeDimsRef.current;
-    if (!all.length) return;
-    let sumX = 0, sumY = 0;
-    all.forEach((n) => {
-      const d = dims[n.id] ?? { w: NODE_W, h: NODE_H_EST };
-      sumX += n.x + d.w / 2;
-      sumY += n.y + d.h / 2;
+  // ── Connector edges — derived from each conversation node's branch/link fields ──
+  const flowEdges = useMemo<CanvasEdge[]>(() => {
+    const edges: CanvasEdge[] = [];
+    nodes.forEach((node) => {
+      if (node.type !== 'conversation') return;
+      if (node.data.branchParentId) {
+        edges.push({
+          id: `branch-${node.id}`, type: 'branch',
+          source: node.data.branchParentId, sourceHandle: 'branchSource',
+          target: node.id, targetHandle: 'branchTarget',
+          selectable: false, deletable: false, data: {},
+        });
+      }
+      if (node.data.linkedFromId) {
+        edges.push({
+          id: `link-${node.id}`, type: 'link',
+          source: node.data.linkedFromId, sourceHandle: 'linkSource',
+          target: node.id, targetHandle: 'linkTarget',
+          selectable: false, deletable: false, data: {},
+        });
+      }
     });
-    const cx = sumX / all.length, cy = sumY / all.length;
-    const vw = window.innerWidth, vh = window.innerHeight;
-    animateToView(vw / 2 - cx, (vh - TOOLBAR_H) / 2 - cy, 1);
-  }, [animateToView]);
+    return edges;
+  }, [nodes]);
 
-  // ── Connector edges ───────────────────────────────────────────
-  interface Edge { id: string; x1: number; y1: number; x2: number; y2: number; kind: 'branch' | 'link'; }
+  const conversationNodeCount = nodes.filter((node) => node.type === 'conversation').length;
+  const selectedCount = nodes.filter((node) => node.selected).length;
+  const activeNode = activeNodeId ? nodes.find((node) => node.id === activeNodeId) : undefined;
+  const activeNodePrompt = activeNode?.type === 'conversation' ? activeNode.data.prompt : undefined;
 
-  const buildEdge = (sourceId: string, child: (typeof nodes)[0], kind: Edge['kind']): Edge | null => {
-    const parent = nodes.find((p) => p.id === sourceId);
-    if (!parent) return null;
-    const pd = nodeDims[parent.id] ?? { w: NODE_W, h: NODE_H_EST };
-    const cd = nodeDims[child.id]  ?? { w: NODE_W, h: NODE_H_EST };
-    if (kind === 'link') {
-      return { id: `link-${child.id}`, kind,
-        x1: parent.x + pd.w, y1: parent.y + pd.h / 2,
-        x2: child.x,         y2: child.y  + cd.h / 2 };
-    }
-    return { id: `branch-${child.id}`, kind,
-      x1: parent.x + pd.w / 2, y1: parent.y + pd.h,
-      x2: child.x  + cd.w / 2, y2: child.y };
-  };
-
-  const edges: Edge[] = nodes.flatMap((n) => {
-    const res: Edge[] = [];
-    if (n.parentId)     { const e = buildEdge(n.parentId,     n, 'branch'); if (e) res.push(e); }
-    if (n.linkedFromId) { const e = buildEdge(n.linkedFromId, n, 'link');   if (e) res.push(e); }
-    return res;
-  });
-
-  // ── Grid ──────────────────────────────────────────────────────
-  const gridSize = 28 * scale;
-  const bpx = ((pan.x % gridSize) + gridSize) % gridSize;
-  const bpy = ((pan.y % gridSize) + gridSize) % gridSize;
-
-  // ── Selection rect bounds (canvas-area coords) ────────────────
-  const selBounds = selectRect ? {
-    left:   Math.min(selectRect.x1, selectRect.x2),
-    top:    Math.min(selectRect.y1, selectRect.y2),
-    width:  Math.abs(selectRect.x2 - selectRect.x1),
-    height: Math.abs(selectRect.y2 - selectRect.y1),
-  } : null;
+  const paneCursor = effectiveMode === 'pan'
+    ? 'grab'
+    : effectiveMode === 'text' || effectiveMode === 'shape-square' || effectiveMode === 'shape-circle'
+      ? 'crosshair'
+      : 'default';
 
   return (
     <div
@@ -519,141 +480,53 @@ export default function CanvasChat() {
       className="w-screen h-screen overflow-hidden relative bg-surface font-sans"
     >
       <Toolbar
-        nodeCount={nodes.length} theme={theme} scale={scale}
+        nodeCount={conversationNodeCount} theme={theme} scale={currentZoom}
         mode={effectiveMode} onSetMode={setMode}
-        onToggleTheme={() => setTheme((t) => t === 'dark' ? 'light' : 'dark')}
+        onToggleTheme={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))}
         onFitAll={fitAll}
-        onZoomIn={() => zoomAt(window.innerWidth / 2, window.innerHeight / 2, 1.25)}
-        onZoomOut={() => zoomAt(window.innerWidth / 2, window.innerHeight / 2, 0.8)}
-        onZoomReset={() => {
-          const cx = window.innerWidth / 2, cay = window.innerHeight / 2 - TOOLBAR_H;
-          animateToView(cx - (cx - panRef.current.x) / scaleRef.current,
-                        cay - (cay - panRef.current.y) / scaleRef.current, 1);
-        }}
+        onZoomIn={() => zoomIn({ duration: 200 })}
+        onZoomOut={() => zoomOut({ duration: 200 })}
+        onZoomReset={resetZoomKeepingCenter}
       />
 
       {/* ── Canvas area ─────────────────────────────────────── */}
       <div
+        ref={canvasWrapperRef}
         className="absolute inset-x-0 bottom-0 overflow-hidden"
         style={{ top: TOOLBAR_H }}
         onContextMenu={(e) => e.preventDefault()}
       >
-        {/* Dot-grid background */}
-        <div
-          onMouseDown={handleBgMouseDown}
-          className={`absolute inset-0 ${
-            effectiveMode === 'pan' ? 'cursor-grab'
-            : effectiveMode === 'text' || effectiveMode === 'shape-square' || effectiveMode === 'shape-circle' ? 'cursor-crosshair'
-            : 'cursor-default'
-          }`}
-          style={{
-            backgroundImage: 'radial-gradient(circle, var(--color-canvas-dot) 1.5px, transparent 1.5px)',
-            backgroundSize: `${gridSize}px ${gridSize}px`,
-            backgroundPosition: `${bpx}px ${bpy}px`,
-          }}
-        />
-
-        {/* World container — single CSS transform for pan + zoom */}
-        <div
-          className="absolute top-0 left-0 pointer-events-none"
-          style={{ transformOrigin: '0 0', transform: `translate(${pan.x}px, ${pan.y}px) scale(${scale})` }}
+        <CanvasEdgeMarkerDefs />
+        <ReactFlow<CanvasNode, CanvasEdge>
+          nodes={flowNodes}
+          edges={flowEdges}
+          nodeTypes={nodeTypes}
+          edgeTypes={edgeTypes}
+          onNodesChange={onNodesChange}
+          onPaneClick={onPaneClick}
+          style={{ cursor: paneCursor }}
+          minZoom={SCALE_MIN}
+          maxZoom={SCALE_MAX}
+          panOnDrag={effectiveMode === 'pan' ? [0, 1] : [1]}
+          selectionOnDrag={effectiveMode === 'select'}
+          selectionKeyCode={null}
+          deleteKeyCode={null}
+          zoomOnDoubleClick={false}
+          nodesConnectable={false}
+          elevateNodesOnSelect
         >
-          {/* SVG connector lines (world-space coordinates) */}
-          <svg className="absolute top-0 left-0 overflow-visible pointer-events-none" style={{ width: 1, height: 1 }}>
-            <defs>
-              <marker id="arrow-branch" markerWidth="7" markerHeight="5" refX="5" refY="2.5" orient="auto">
-                <polygon points="0 0, 7 2.5, 0 5" fill="var(--color-connector)" />
-              </marker>
-              <marker id="arrow-link" markerWidth="6" markerHeight="4" refX="4" refY="2" orient="auto">
-                <polygon points="0 0, 6 2, 0 4" fill="var(--color-connector)" fillOpacity="0.5" />
-              </marker>
-            </defs>
-            {edges.map((e) => {
-              const isBranch = e.kind === 'branch';
-              const midX = (e.x1 + e.x2) / 2, midY = (e.y1 + e.y2) / 2;
-              const d = isBranch
-                ? `M ${e.x1} ${e.y1} C ${e.x1} ${midY} ${e.x2} ${midY} ${e.x2} ${e.y2}`
-                : `M ${e.x1} ${e.y1} C ${midX} ${e.y1} ${midX} ${e.y2} ${e.x2} ${e.y2}`;
-              return (
-                <path key={e.id} d={d}
-                  stroke="var(--color-connector)" strokeOpacity={isBranch ? 1 : 0.7}
-                  strokeWidth={1.5} fill="none"
-                  strokeDasharray={isBranch ? '5 4' : '4 5'}
-                  markerEnd={isBranch ? 'url(#arrow-branch)' : 'url(#arrow-link)'} />
-              );
-            })}
-          </svg>
-
-          {/* Nodes */}
-          {nodes.map((node) => {
-            const parentNode = node.parentId ? nodes.find((n) => n.id === node.parentId) : undefined;
-            return (
-              <ConversationNode
-                key={node.id} node={node}
-                panX={pan.x} panY={pan.y} scale={scale}
-                isActive={activeNodeId === node.id}
-                isSelected={selectedIds.has(node.id)}
-                selectedCount={selectedIds.size}
-                parentPrompt={parentNode?.prompt}
-                onBranch={() => setActiveNodeId((prev) => prev === node.id ? null : node.id)}
-                onSelect={() => handleNodeSelect(node.id)}
-                onFocus={() => focusNode(node.id)}
-                onExpand={() => setModal({ prompt: node.prompt, response: node.response, parentPrompt: parentNode?.prompt })}
-                onMove={(x, y) => updateNodePos(node.id, x, y)}
-                onGroupDragStart={handleGroupDragStart}
-                onGroupMove={handleGroupMove}
-                onColorChange={(color) => updateNodeColor(node.id, color)}
-                onToggleMinimize={() => toggleMinimize(node.id)}
-                onDimsChange={(w, h) => updateDims(node.id, w, h)}
-              />
-            );
-          })}
-
-          {/* Freeform canvas elements — text & shapes */}
-          {elements.map((el) => (
-            <CanvasElementView
-              key={el.id} element={el}
-              panX={pan.x} panY={pan.y} scale={scale}
-              isSelected={selectedIds.has(el.id)}
-              selectedCount={selectedIds.size}
-              autoEdit={autoEditId === el.id}
-              onSelect={() => handleNodeSelect(el.id)}
-              onMove={(x, y) => updateElementPos(el.id, x, y)}
-              onGroupDragStart={handleGroupDragStart}
-              onGroupMove={handleGroupMove}
-              onTextChange={(text) => updateElementText(el.id, text)}
-              onColorChange={(color) => updateElementColor(el.id, color)}
-              onDelete={() => deleteElement(el.id)}
-              onDimsChange={(w, h) => updateDims(el.id, w, h)}
-            />
-          ))}
-        </div>
-
-        {/* Selection rectangle */}
-        {selBounds && (
-          <div
-            className="absolute pointer-events-none z-50 rounded border-[1.5px] border-dashed border-accent bg-accent/[0.07]"
-            style={{ left: selBounds.left, top: selBounds.top, width: selBounds.width, height: selBounds.height }}
-          />
-        )}
-
-        {/* Pan-mode overlay — captures every drag across the whole canvas, over nodes too */}
-        {effectiveMode === 'pan' && (
-          <div
-            onMouseDown={(e) => startPan(e.clientX, e.clientY)}
-            className="absolute inset-0 cursor-grab active:cursor-grabbing z-[900]"
-          />
-        )}
+          <Background variant={BackgroundVariant.Dots} gap={28} size={1.5} color="var(--color-canvas-dot)" />
+        </ReactFlow>
       </div>
 
       {/* Selection count badge */}
-      {selectedIds.size > 0 && (
+      {selectedCount > 0 && (
         <div className="fixed bottom-[110px] right-5 z-[200] flex items-center gap-2
                         px-3.5 py-1.5 rounded-full text-xs font-semibold
                         bg-surface-overlay border border-accent text-foreground shadow-card">
           <FontAwesomeIcon icon={faLayerGroup} className="text-accent w-3 h-3" />
-          {selectedIds.size} item{selectedIds.size > 1 ? 's' : ''} selected
-          <button onClick={() => setSelectedIds(new Set())}
+          {selectedCount} item{selectedCount > 1 ? 's' : ''} selected
+          <button onClick={() => setNodes((prev) => prev.map((node) => (node.selected ? { ...node, selected: false } : node)))}
                   className="text-foreground-muted bg-transparent border-none cursor-pointer hover:text-foreground transition-colors">
             <FontAwesomeIcon icon={faXmark} className="w-3 h-3" />
           </button>
@@ -691,7 +564,7 @@ export default function CanvasChat() {
       )}
 
       {/* Empty state */}
-      {nodes.length === 0 && (
+      {conversationNodeCount === 0 && (
         <div className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2
                         text-center pointer-events-none z-[1]">
           <div className="text-4xl text-foreground-subtle mb-4">✦</div>
@@ -706,13 +579,16 @@ export default function CanvasChat() {
       )}
 
       <Joystick
-        onPan={handleJoystickPan}
-        onStart={() => cancelAnimationFrame(animFrameRef.current)}
+        onPan={(deltaX, deltaY) => {
+          const viewport = getViewport();
+          setViewport({ x: viewport.x + deltaX, y: viewport.y + deltaY, zoom: viewport.zoom });
+        }}
+        onStart={() => {}}
       />
 
       <ChatInput
         activeNodeId={activeNodeId}
-        activeNodePrompt={activeNodeId ? nodes.find((n) => n.id === activeNodeId)?.prompt : undefined}
+        activeNodePrompt={activeNodePrompt}
         onSubmit={addNode}
         onClearActive={() => setActiveNodeId(null)}
       />

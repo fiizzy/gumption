@@ -17,7 +17,7 @@ import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import { faCodeBranch, faLayerGroup, faXmark } from '@fortawesome/free-solid-svg-icons';
 import ConversationNodeComponent, { DEFAULT_COLOR } from './ConversationNode';
 import CanvasElementComponent from './CanvasElement';
-import { BranchEdgeComponent, LinkEdgeComponent, CanvasEdgeMarkerDefs } from './CanvasEdges';
+import { BranchEdgeComponent, CanvasEdgeMarkerDefs } from './CanvasEdges';
 import ChatInput from './ChatInput';
 import Joystick from './Joystick';
 import Toolbar, { TOOLBAR_H } from './Toolbar';
@@ -52,7 +52,6 @@ const nodeTypes = {
 };
 const edgeTypes = {
   branch: BranchEdgeComponent,
-  link: LinkEdgeComponent,
 };
 
 interface ModalContent { prompt: string; response: string; parentPrompt?: string; }
@@ -327,38 +326,42 @@ function CanvasChatInner() {
   }, [mode, screenToFlowPosition, addElement]);
 
   // ── Add a chat node + call the AI ───────────────────────────────
+  //
+  // Branching is the only way conversation nodes ever connect — there is no
+  // separate "chained but unrelated" link type. `activeNodeId` carries the
+  // just-created node forward automatically (see the `setActiveNodeId(nodeId)`
+  // below) so simply continuing to type keeps branching from — and flowing
+  // straight down from — whatever you last sent, with no need to press
+  // "Branch" again. Explicitly clicking "Branch" on an older node (or
+  // clearing the active node) is what redirects or detaches that default.
   const addNode = async (prompt: string) => {
     const nodeId = crypto.randomUUID();
-    const branchParentId = activeNodeId;
     const allNodes = nodesRef.current;
     const conversationNodes = allNodes.filter((node): node is ConversationNodeState => node.type === 'conversation');
+    const lastConversationNode = conversationNodes.length > 0 ? conversationNodes[conversationNodes.length - 1] : undefined;
+    const branchParentNode = activeNodeId ? conversationNodes.find((node) => node.id === activeNodeId) : undefined;
+    const branchParentId = branchParentNode?.id ?? null;
 
     let x: number, y: number;
-    if (branchParentId) {
-      const branchParentNode = conversationNodes.find((node) => node.id === branchParentId);
-      if (branchParentNode) {
-        const { w: parentW } = getNodeDims(branchParentId);
-        const siblingCount = conversationNodes.filter((node) => node.data.branchParentId === branchParentId).length;
-        x = branchParentNode.position.x + parentW + 52;
-        y = branchParentNode.position.y + siblingCount * (NODE_H_EST + 24);
-      } else { x = 80; y = 80; }
-    } else if (conversationNodes.length > 0) {
-      const lastNode = conversationNodes[conversationNodes.length - 1];
-      const { w: lastW } = getNodeDims(lastNode.id);
-      x = lastNode.position.x + lastW + 52;
-      y = lastNode.position.y;
+    if (branchParentNode && branchParentNode.id !== lastConversationNode?.id) {
+      // Explicit fork off an earlier node — branch out to the side.
+      const { w: parentW } = getNodeDims(branchParentNode.id);
+      const siblingCount = conversationNodes.filter((node) => node.data.branchParentId === branchParentNode.id).length;
+      x = branchParentNode.position.x + parentW + 52;
+      y = branchParentNode.position.y + siblingCount * (NODE_H_EST + 24);
+    } else if (branchParentNode) {
+      // Continuing straight from the most recent node — keep flowing downward.
+      const { h: parentH } = getNodeDims(branchParentNode.id);
+      x = branchParentNode.position.x;
+      y = branchParentNode.position.y + parentH + 52;
     } else {
+      // No active thread — a fresh, untethered conversation.
       const { centerX, centerY } = getContainerCenter();
       const viewport = getViewport();
       x = (centerX - viewport.x) / viewport.zoom - NODE_W / 2;
       y = (centerY - viewport.y) / viewport.zoom - NODE_H_EST / 2;
     }
     ({ x, y } = findFreeSpot(x, y, NODE_W, NODE_H_EST));
-
-    const linkedFromId = !branchParentId && conversationNodes.length > 0
-      ? conversationNodes[conversationNodes.length - 1].id
-      : null;
-    const branchParentNode = branchParentId ? conversationNodes.find((node) => node.id === branchParentId) : undefined;
 
     const newConversationNode: ConversationNodeState = {
       id: nodeId,
@@ -368,11 +371,11 @@ function CanvasChatInner() {
       data: {
         prompt, response: '', loading: true, minimized: false,
         color: branchParentNode?.data.color ?? DEFAULT_COLOR,
-        branchParentId, linkedFromId,
+        branchParentId,
       },
     };
     setNodes((prev) => [...prev.map((node) => (node.selected ? { ...node, selected: false } : node)), newConversationNode]);
-    setActiveNodeId(null);
+    setActiveNodeId(nodeId);
     centerOn(x, y);
 
     try {
@@ -438,7 +441,7 @@ function CanvasChatInner() {
     };
   }), [nodes, activeNodeId, focusNode, updateColor, toggleMinimize, updateElementText, deleteElement]);
 
-  // ── Connector edges — derived from each conversation node's branch/link fields ──
+  // ── Connector edges — derived from each conversation node's branch parent ──
   const flowEdges = useMemo<CanvasEdge[]>(() => {
     const edges: CanvasEdge[] = [];
     nodes.forEach((node) => {
@@ -448,14 +451,6 @@ function CanvasChatInner() {
           id: `branch-${node.id}`, type: 'branch',
           source: node.data.branchParentId, sourceHandle: 'branchSource',
           target: node.id, targetHandle: 'branchTarget',
-          selectable: false, deletable: false, data: {},
-        });
-      }
-      if (node.data.linkedFromId) {
-        edges.push({
-          id: `link-${node.id}`, type: 'link',
-          source: node.data.linkedFromId, sourceHandle: 'linkSource',
-          target: node.id, targetHandle: 'linkTarget',
           selectable: false, deletable: false, data: {},
         });
       }

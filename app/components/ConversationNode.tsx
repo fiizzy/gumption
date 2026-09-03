@@ -40,7 +40,7 @@ function isLightColor(hex: string): boolean {
 }
 
 // Handles are invisible connection points that only exist so the custom
-// "branch"/"link" edges know which side of the card to attach to — end
+// "branch" edge knows which side of the card to attach to — end
 // users never drag new connections from them (isConnectable={false}).
 const HANDLE_STYLE = { opacity: 0, width: 1, height: 1, pointerEvents: "none" as const };
 
@@ -139,8 +139,6 @@ export default function ConversationNode({
     >
       <Handle type="target" position={Position.Top} id="branchTarget" isConnectable={false} style={HANDLE_STYLE} />
       <Handle type="source" position={Position.Bottom} id="branchSource" isConnectable={false} style={HANDLE_STYLE} />
-      <Handle type="target" position={Position.Left} id="linkTarget" isConnectable={false} style={HANDLE_STYLE} />
-      <Handle type="source" position={Position.Right} id="linkSource" isConnectable={false} style={HANDLE_STYLE} />
 
       {/* ── Header / drag handle — click anywhere on it to collapse/expand ── */}
       <div

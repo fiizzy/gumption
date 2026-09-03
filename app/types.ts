@@ -4,9 +4,14 @@ export type ShapeKind = 'square' | 'circle';
 
 // ── Persisted shape — what actually lives in CanvasChat's `nodes` state ──
 //
-// `branchParentId` / `linkedFromId` are deliberately NOT named `parentId` —
-// xyflow reserves `Node.parentId` for its own sub-flow/grouping nesting
-// feature, and reusing that name would silently collide with it.
+// `branchParentId` is deliberately NOT named `parentId` — xyflow reserves
+// `Node.parentId` for its own sub-flow/grouping nesting feature, and
+// reusing that name would silently collide with it.
+//
+// Every conversation node either branches from an earlier one (set) or is
+// a standalone, untethered session (null) — there is no other connection
+// type. See CanvasChat's `addNode` for how the active node is carried
+// forward by default so continuing a thread doesn't require re-selecting it.
 export interface ConversationNodeData {
   [key: string]: unknown;
   prompt: string;
@@ -15,7 +20,6 @@ export interface ConversationNodeData {
   minimized: boolean;
   color: string;
   branchParentId: string | null;
-  linkedFromId: string | null;
 }
 
 export interface TextElementData {
@@ -78,5 +82,4 @@ export interface CanvasEdgeData {
 }
 
 export type BranchEdge = Edge<CanvasEdgeData, 'branch'>;
-export type LinkEdge = Edge<CanvasEdgeData, 'link'>;
-export type CanvasEdge = BranchEdge | LinkEdge;
+export type CanvasEdge = BranchEdge;

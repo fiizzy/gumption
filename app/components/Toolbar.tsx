@@ -12,10 +12,11 @@ import {
   faMagnifyingGlassPlus,
   faSun,
   faMoon,
-  faFolder,
 } from '@fortawesome/free-solid-svg-icons';
 
 export const TOOLBAR_H = 52;
+export const SIDEBAR_EXPANDED_WIDTH = 240;
+export const SIDEBAR_COLLAPSED_WIDTH = 48;
 
 export type Mode = 'select' | 'pan' | 'text' | 'shape-square' | 'shape-circle';
 
@@ -24,37 +25,31 @@ interface Props {
   theme: 'light' | 'dark';
   scale: number;
   mode: Mode;
-  isProjectsSidebarExpanded: boolean;
+  isProjectsSidebarCollapsed: boolean;
   onSetMode: (mode: Mode) => void;
   onToggleTheme: () => void;
-  onToggleProjectsSidebar: () => void;
   onFitAll: () => void;
   onZoomIn: () => void;
   onZoomOut: () => void;
   onZoomReset: () => void;
 }
 
-export default function Toolbar({ nodeCount, theme, scale, mode, isProjectsSidebarExpanded, onSetMode, onToggleTheme, onToggleProjectsSidebar, onFitAll, onZoomIn, onZoomOut, onZoomReset }: Props) {
+export default function Toolbar({ nodeCount, theme, scale, mode, isProjectsSidebarCollapsed, onSetMode, onToggleTheme, onFitAll, onZoomIn, onZoomOut, onZoomReset }: Props) {
   const pct = Math.round(scale * 100);
+  const sidebarWidth = isProjectsSidebarCollapsed ? SIDEBAR_COLLAPSED_WIDTH : SIDEBAR_EXPANDED_WIDTH;
 
   return (
     <div
-      style={{ height: TOOLBAR_H }}
-      className="fixed top-0 inset-x-0 z-[1000] flex items-center gap-3 px-4
-                 bg-surface-raised border-b border-border select-none font-sans"
+      style={{ height: TOOLBAR_H, left: sidebarWidth }}
+      className="fixed top-0 right-0 z-[1000] flex items-center gap-3 px-4
+                 bg-surface-raised border-b border-border select-none font-sans
+                 transition-[left] duration-200 ease-in-out"
     >
       {/* Logo */}
       <div className="flex items-center gap-2 shrink-0">
-        <span className="text-lg text-accent leading-none">✦</span>
+        <span className="text-lg text-accent leading-none">&#10038;</span>
         <span className="text-sm font-semibold text-foreground tracking-tight">Canvas Chat</span>
       </div>
-
-      <Divider />
-
-      {/* Projects sidebar toggle */}
-      <ModeBtn active={isProjectsSidebarExpanded} onClick={onToggleProjectsSidebar} title="Toggle projects sidebar">
-        <FontAwesomeIcon icon={faFolder} className="w-3.5 h-3.5" />
-      </ModeBtn>
 
       <Divider />
 

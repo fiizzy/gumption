@@ -12,6 +12,7 @@ import {
   faMagnifyingGlassPlus,
   faSun,
   faMoon,
+  faFolder,
 } from '@fortawesome/free-solid-svg-icons';
 
 export const TOOLBAR_H = 52;
@@ -23,15 +24,17 @@ interface Props {
   theme: 'light' | 'dark';
   scale: number;
   mode: Mode;
+  isProjectsSidebarExpanded: boolean;
   onSetMode: (mode: Mode) => void;
   onToggleTheme: () => void;
+  onToggleProjectsSidebar: () => void;
   onFitAll: () => void;
   onZoomIn: () => void;
   onZoomOut: () => void;
   onZoomReset: () => void;
 }
 
-export default function Toolbar({ nodeCount, theme, scale, mode, onSetMode, onToggleTheme, onFitAll, onZoomIn, onZoomOut, onZoomReset }: Props) {
+export default function Toolbar({ nodeCount, theme, scale, mode, isProjectsSidebarExpanded, onSetMode, onToggleTheme, onToggleProjectsSidebar, onFitAll, onZoomIn, onZoomOut, onZoomReset }: Props) {
   const pct = Math.round(scale * 100);
 
   return (
@@ -45,6 +48,13 @@ export default function Toolbar({ nodeCount, theme, scale, mode, onSetMode, onTo
         <span className="text-lg text-accent leading-none">✦</span>
         <span className="text-sm font-semibold text-foreground tracking-tight">Canvas Chat</span>
       </div>
+
+      <Divider />
+
+      {/* Projects sidebar toggle */}
+      <ModeBtn active={isProjectsSidebarExpanded} onClick={onToggleProjectsSidebar} title="Toggle projects sidebar">
+        <FontAwesomeIcon icon={faFolder} className="w-3.5 h-3.5" />
+      </ModeBtn>
 
       <Divider />
 

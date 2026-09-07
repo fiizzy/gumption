@@ -22,6 +22,7 @@ import ChatInput from './ChatInput';
 import Joystick from './Joystick';
 import Toolbar, { TOOLBAR_H } from './Toolbar';
 import type { Mode } from './Toolbar';
+import ProjectsSidebar from './ProjectsSidebar';
 import {
   CanvasNode,
   ConversationNode as ConversationNodeState,
@@ -68,6 +69,7 @@ function CanvasChatInner() {
   const [nodes, setNodes]               = useState<CanvasNode[]>([]);
   const [activeNodeId, setActiveNodeId] = useState<string | null>(null);
   const [theme, setTheme]               = useState<'light' | 'dark'>('dark');
+  const [isProjectsSidebarCollapsed, setIsProjectsSidebarCollapsed] = useState(false);
   const [modal, setModal]               = useState<ModalContent | null>(null);
   const modalRef = useRef<ModalContent | null>(null);
   useEffect(() => { modalRef.current = modal; }, [modal]);
@@ -477,11 +479,18 @@ function CanvasChatInner() {
       <Toolbar
         nodeCount={conversationNodeCount} theme={theme} scale={currentZoom}
         mode={effectiveMode} onSetMode={setMode}
+        isProjectsSidebarExpanded={!isProjectsSidebarCollapsed}
         onToggleTheme={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))}
+        onToggleProjectsSidebar={() => setIsProjectsSidebarCollapsed((collapsed) => !collapsed)}
         onFitAll={fitAll}
         onZoomIn={() => zoomIn({ duration: 200 })}
         onZoomOut={() => zoomOut({ duration: 200 })}
         onZoomReset={resetZoomKeepingCenter}
+      />
+
+      <ProjectsSidebar
+        isCollapsed={isProjectsSidebarCollapsed}
+        onToggleCollapsed={() => setIsProjectsSidebarCollapsed((collapsed) => !collapsed)}
       />
 
       {/* ── Canvas area ─────────────────────────────────────── */}

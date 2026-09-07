@@ -9,10 +9,12 @@ import {
   faFileAlt,
 } from "@fortawesome/free-solid-svg-icons";
 import NewProjectModal from "./NewProjectModal";
+import HarnessSwitcher from "./HarnessSwitcher";
+import type { Harness } from "../types";
 import { cn } from "../lib/cn";
 
-const SIDEBAR_EXPANDED_WIDTH = 240;
-const SIDEBAR_COLLAPSED_WIDTH = 48;
+export const SIDEBAR_EXPANDED_WIDTH = 240;
+export const SIDEBAR_COLLAPSED_WIDTH = 48;
 
 interface Project {
   id: string;
@@ -29,11 +31,15 @@ const INITIAL_DUMMY_PROJECTS: Project[] = [
 interface Props {
   isCollapsed: boolean;
   onToggleCollapsed: () => void;
+  harness: Harness;
+  onHarnessChange: (harness: Harness) => void;
 }
 
 export default function ProjectsSidebar({
   isCollapsed,
   onToggleCollapsed,
+  harness,
+  onHarnessChange,
 }: Props) {
   const [projects, setProjects] = useState<Project[]>(INITIAL_DUMMY_PROJECTS);
   const [isNewProjectModalOpen, setIsNewProjectModalOpen] = useState(false);
@@ -151,6 +157,16 @@ export default function ProjectsSidebar({
               );
             })}
           </div>
+        </div>
+
+        {/* Harness selector — dummy UI; only Claude is actually wired up */}
+        <div
+          className={cn(
+            "shrink-0 border-t border-border py-2 flex",
+            isCollapsed ? "justify-center px-1.5" : "justify-start px-2",
+          )}
+        >
+          <HarnessSwitcher harness={harness} onChange={onHarnessChange} compact={isCollapsed} />
         </div>
       </div>
 

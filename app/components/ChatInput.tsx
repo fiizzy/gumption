@@ -75,6 +75,7 @@ export default function ChatInput({ activeNodeId, activeNodePrompt, onSubmit, on
           placeholder={activeNodeId ? 'Continue this thread…' : 'Start a new conversation…'}
           className="flex-1 px-4 py-[15px] bg-transparent border-none outline-none
                      text-sm text-foreground placeholder:text-foreground-subtle font-sans"
+          style={{ caretColor: 'var(--color-foreground)' }}
         />
         <button
           onClick={submit}

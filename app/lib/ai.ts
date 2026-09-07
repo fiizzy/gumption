@@ -23,6 +23,10 @@ export async function simulateAI(
       ? `Earlier in this thread:\nQ: ${parentPrompt}\nA: ${parentResponse}\n\nNow the follow-up question:\n${prompt}`
       : prompt;
 
+  // TODO(harness-switcher): dispatch on the selected harness (see
+  // HarnessSwitcher.tsx / CanvasChatInner's selectedHarness state) once a
+  // second harness (e.g. Codex) is actually wired up — today this always
+  // shells out to Claude Code regardless of the toolbox's harness selector.
   const output = await Command.create("claude-code", [
     "-p",
     fullPrompt,

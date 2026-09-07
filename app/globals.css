@@ -62,6 +62,17 @@
   --width-node: 300px; /* → w-node */
 }
 
+/* [data-theme] declares its own color-scheme so form controls and
+   contentEditable carets render using the app's theme instead of the
+   browser/webview's OS-level prefers-color-scheme guess, which was
+   causing typed text to appear inverted (e.g. white-on-white). */
+[data-theme] {
+  color-scheme: dark;
+}
+[data-theme="light"] {
+  color-scheme: light;
+}
+
 /* ═══════════════════════════════════════════════════════════════
    LIGHT THEME  — overrides the @theme defaults above
 ═══════════════════════════════════════════════════════════════ */
@@ -111,6 +122,20 @@
   }
 }
 
+/* Pan mode should always just pan the canvas, never fall through to a
+   node's own drag/resize/click handling underneath the cursor — so nodes
+   and edges are made non-interactive for the whole pane while panning.
+   The cursor is also forced explicitly (not just left to fall through),
+   since pointer-events:none doesn't reliably repaint an already-hovered
+   element's cursor in every engine. */
+.cc-pan-mode .react-flow__nodes,
+.cc-pan-mode .react-flow__nodes *,
+.cc-pan-mode .react-flow__edges,
+.cc-pan-mode .react-flow__edges * {
+  pointer-events: none !important;
+  cursor: grab !important;
+}
+
 /* ── Thin scrollbar for node bodies ── */
 .cc-scroll {
   scrollbar-width: thin;
@@ -128,6 +153,51 @@
 }
 .cc-scroll::-webkit-scrollbar-thumb:hover {
   background: var(--color-foreground-muted);
+}
+
+/* ── Code syntax highlighting (rehype-highlight's .hljs-* token classes)
+   mapped onto existing design-system tokens instead of a canned highlight.js
+   theme, so it stays in sync with [data-theme] automatically. ── */
+.hljs-comment,
+.hljs-quote {
+  color: var(--color-foreground-subtle);
+  font-style: italic;
+}
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-doctag,
+.hljs-type,
+.hljs-literal {
+  color: var(--color-accent);
+}
+.hljs-string,
+.hljs-attr,
+.hljs-addition,
+.hljs-regexp {
+  color: var(--color-branch-fg);
+}
+.hljs-title,
+.hljs-name,
+.hljs-section,
+.hljs-selector-id,
+.hljs-selector-class {
+  color: var(--color-foreground);
+  font-weight: 600;
+}
+.hljs-number,
+.hljs-symbol,
+.hljs-bullet {
+  color: var(--color-accent);
+}
+.hljs-deletion {
+  color: var(--color-foreground-muted);
+  text-decoration: line-through;
+}
+.hljs-emphasis {
+  font-style: italic;
+}
+.hljs-strong {
+  font-weight: 700;
 }
 
 /* ── Keyframes ── */

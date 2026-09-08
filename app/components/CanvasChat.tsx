@@ -477,6 +477,47 @@ function CanvasChatInner() {
     );
   }, []);
 
+  // Layering — applies to every node type uniformly (chat/text/shape/line),
+  // via xyflow's own `zIndex` node field rather than anything in `data`.
+  // `elevateNodesOnSelect` is off on <ReactFlow> below specifically so this
+  // stays the only thing governing stacking — selecting or dragging a node
+  // never changes its layer. Two running bounds (rather than reading
+  // `Math.max`/`Math.min` off current nodes each click) keep the ordering
+  // exact even after nodes are deleted and re-added: a value once handed out
+  // is never reused, so "bring to front" always beats every z-index ever
+  // assigned, not just the ones currently on screen.
+  const zIndexBoundsRef = useRef({ max: 0, min: 0 });
+
+  const bringSelectionToFront = useCallback(() => {
+    setNodes((prev) => {
+      const selectedInOrder = prev.filter((node) => node.selected);
+      if (selectedInOrder.length === 0) return prev;
+      const start = zIndexBoundsRef.current.max + 1;
+      zIndexBoundsRef.current.max = start + selectedInOrder.length - 1;
+      const nextZIndexById = new Map(
+        selectedInOrder.map((node, index) => [node.id, start + index]),
+      );
+      return prev.map((node) =>
+        nextZIndexById.has(node.id) ? { ...node, zIndex: nextZIndexById.get(node.id) } : node,
+      );
+    });
+  }, []);
+
+  const sendSelectionToBack = useCallback(() => {
+    setNodes((prev) => {
+      const selectedInOrder = prev.filter((node) => node.selected);
+      if (selectedInOrder.length === 0) return prev;
+      const start = zIndexBoundsRef.current.min - selectedInOrder.length;
+      zIndexBoundsRef.current.min = start;
+      const nextZIndexById = new Map(
+        selectedInOrder.map((node, index) => [node.id, start + index]),
+      );
+      return prev.map((node) =>
+        nextZIndexById.has(node.id) ? { ...node, zIndex: nextZIndexById.get(node.id) } : node,
+      );
+    });
+  }, []);
+
   const resizeShapeElement = useCallback(
     (id: string, width: number, height: number, x: number, y: number) =>
       setNodes((prev) =>
@@ -1089,6 +1130,8 @@ function CanvasChatInner() {
               onColorChange={updateColorForSelection}
               onFontWeightChange={updateFontWeightForSelection}
               onStrokeStyleChange={updateStrokeStyleForSelection}
+              onBringToFront={bringSelectionToFront}
+              onSendToBack={sendSelectionToBack}
             />
           ) : undefined
         }
@@ -1135,7 +1178,14 @@ function CanvasChatInner() {
           deleteKeyCode={null}
           zoomOnDoubleClick={false}
           nodesConnectable
-          elevateNodesOnSelect
+          // Off deliberately — xyflow's default temporarily bumps a
+          // selected/dragged node's stacking above everything else, which
+          // would override the explicit ordering from bringSelectionToFront/
+          // sendSelectionToBack the moment it's touched. With this off, a
+          // node's zIndex (set only by those two actions) is the sole thing
+          // governing stacking, so selecting or moving an element never
+          // changes its layer.
+          elevateNodesOnSelect={false}
         >
           <Background
             variant={BackgroundVariant.Dots}

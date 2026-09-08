@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
-import { faBold, faGripLines } from "@fortawesome/free-solid-svg-icons";
+import { faBold, faGripLines, faAnglesUp, faAnglesDown } from "@fortawesome/free-solid-svg-icons";
 import ColorSwatches from "./ColorSwatches";
 import type { CanvasNode, FontWeight, StrokeStyle } from "../types";
 import { cn } from "../lib/cn";
@@ -12,6 +12,8 @@ interface Props {
   onColorChange: (color: string) => void;
   onFontWeightChange: (fontWeight: FontWeight) => void;
   onStrokeStyleChange: (strokeStyle: StrokeStyle) => void;
+  onBringToFront: () => void;
+  onSendToBack: () => void;
 }
 
 // Docked in the toolbox rather than floating next to whatever's selected —
@@ -22,6 +24,8 @@ export default function StylePanel({
   onColorChange,
   onFontWeightChange,
   onStrokeStyleChange,
+  onBringToFront,
+  onSendToBack,
 }: Props) {
   const [showColors, setShowColors] = useState(false);
 
@@ -94,6 +98,24 @@ export default function StylePanel({
           <FontAwesomeIcon icon={faGripLines} className="w-3 h-3" />
         </button>
       )}
+
+      {/* Layering — every selectable element type has a z-index, so unlike
+          font weight/stroke style above these two are never gated on the
+          selection's composition. */}
+      <button
+        onClick={onBringToFront}
+        title="Bring to front"
+        className="w-7 h-7 flex items-center justify-center rounded-md border-none bg-transparent text-foreground-muted hover:bg-surface-subtle cursor-pointer"
+      >
+        <FontAwesomeIcon icon={faAnglesUp} className="w-3 h-3" />
+      </button>
+      <button
+        onClick={onSendToBack}
+        title="Send to back"
+        className="w-7 h-7 flex items-center justify-center rounded-md border-none bg-transparent text-foreground-muted hover:bg-surface-subtle cursor-pointer"
+      >
+        <FontAwesomeIcon icon={faAnglesDown} className="w-3 h-3" />
+      </button>
     </div>
   );
 }

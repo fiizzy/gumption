@@ -1,18 +1,27 @@
 import { Command } from "@tauri-apps/plugin-shell";
+import type { ResponseStyle } from "./useSettings";
 
-// Compact system prompt — canvas cards show only a few lines before
-// truncating, so verbose multi-paragraph answers just get cut off.
-const CHAT_SYSTEM_PROMPT =
-  "You are answering inside a small chat card on a visual canvas app. " +
-  "Keep replies concise (2-5 sentences unless the user explicitly asks for " +
-  "more detail or a list). Plain prose, no markdown headers.";
+const CHAT_CONTEXT = "You are answering inside a chat card on a visual canvas app.";
+const AGENT_CONTEXT =
+  "You are answering inside a chat card on a visual canvas app, working in the user's " +
+  "project folder. You can read, search and edit files there; shell commands are not " +
+  "available. When you change files, end with a short summary of what you changed.";
 
-const AGENT_SYSTEM_PROMPT =
-  "You are answering inside a small chat card on a visual canvas app, working in " +
-  "the user's project folder. You can read, search and edit files there; shell " +
-  "commands are not available. When you change files, finish with a short summary " +
-  "of what you changed. Keep replies concise (2-5 sentences unless the user asks " +
-  "for more). Plain prose, no markdown headers.";
+// Concise suits the small card (long answers get cut off behind a scroll);
+// Detailed is for when the user wants depth and will expand the card.
+const RESPONSE_STYLE_INSTRUCTIONS: Record<ResponseStyle, string> = {
+  concise:
+    "Keep replies concise: 2-5 sentences unless the user explicitly asks for more " +
+    "detail or a list. Plain prose, no markdown headers.",
+  detailed:
+    "Give thorough, well-structured answers: explain the reasoning, cover edge cases " +
+    "and trade-offs, and include examples or code where they help. Use markdown " +
+    "(short headings, lists, fenced code blocks) to keep it scannable.",
+};
+
+function buildSystemPrompt(context: string, responseStyle: ResponseStyle): string {
+  return `${context} ${RESPONSE_STYLE_INSTRUCTIONS[responseStyle]}`;
+}
 
 // These argument lists must match the scoped commands in
 // src-tauri/capabilities/default.json exactly (same order, same literals).
@@ -32,7 +41,7 @@ interface ClaudeResult {
 // print mode), shell disallowed. Without one there is no folder it could
 // safely act in — the app's own launch directory is not the user's project —
 // so it stays a plain chat with every tool switched off.
-function buildCommand(fullPrompt: string, workingFolder: string | null | undefined) {
+function buildCommand(fullPrompt: string, workingFolder: string | null | undefined, responseStyle: ResponseStyle) {
   if (workingFolder) {
     return Command.create(
       AGENT_COMMAND,
@@ -47,7 +56,7 @@ function buildCommand(fullPrompt: string, workingFolder: string | null | undefin
         "--disallowedTools",
         AGENT_DISALLOWED_TOOLS,
         "--append-system-prompt",
-        AGENT_SYSTEM_PROMPT,
+        buildSystemPrompt(AGENT_CONTEXT, responseStyle),
       ],
       { cwd: workingFolder },
     );
@@ -60,7 +69,7 @@ function buildCommand(fullPrompt: string, workingFolder: string | null | undefin
     "--no-session-persistence",
     "--tools=",
     "--append-system-prompt",
-    CHAT_SYSTEM_PROMPT,
+    buildSystemPrompt(CHAT_CONTEXT, responseStyle),
   ]);
 }
 
@@ -69,6 +78,7 @@ export async function simulateAI(
   parentPrompt?: string,
   parentResponse?: string,
   workingFolder?: string | null,
+  responseStyle: ResponseStyle = "concise",
 ): Promise<string> {
   const fullPrompt =
     parentPrompt && parentResponse
@@ -79,7 +89,7 @@ export async function simulateAI(
   // HarnessSwitcher.tsx / CanvasChatInner's selectedHarness state) once a
   // second harness (e.g. Codex) is actually wired up — today this always
   // shells out to Claude Code regardless of the toolbox's harness selector.
-  const output = await buildCommand(fullPrompt, workingFolder).execute();
+  const output = await buildCommand(fullPrompt, workingFolder, responseStyle).execute();
 
   if (output.code !== 0) {
     throw new Error(`claude exited with code ${output.code}: ${output.stderr || output.stdout.slice(0, 200)}`);

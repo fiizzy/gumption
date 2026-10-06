@@ -1,6 +1,7 @@
 'use client';
 
 import type { ReactNode } from 'react';
+import { useViewport } from '@xyflow/react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import type { IconDefinition } from '@fortawesome/fontawesome-svg-core';
 import {
@@ -63,7 +64,6 @@ const DRAWING_TOOLS: ToolDefinition[] = [
 interface Props {
   nodeCount: number;
   theme: 'light' | 'dark';
-  scale: number;
   mode: Mode;
   isToolLocked: boolean;
   canUndo: boolean;
@@ -84,7 +84,6 @@ interface Props {
 export default function Toolbox({
   nodeCount,
   theme,
-  scale,
   mode,
   isToolLocked,
   canUndo,
@@ -101,8 +100,6 @@ export default function Toolbox({
   onZoomReset,
   menuSlot,
 }: Props) {
-  const zoomPercentage = Math.round(scale * 100);
-
   return (
     <>
       {/* Top-center floating toolbox: lock + navigation + drawing tools */}
@@ -171,16 +168,7 @@ export default function Toolbox({
           <ToolbarButton onClick={onZoomOut} title="Zoom out (Ctrl+−)" className="px-2.5">
             <FontAwesomeIcon icon={faMagnifyingGlassMinus} className="w-3 h-3" />
           </ToolbarButton>
-          <ToolbarButton
-            onClick={onZoomReset}
-            title="Reset zoom (Ctrl+0)"
-            className={cn(
-              'min-w-[52px] justify-center text-xs font-semibold tabular-nums',
-              zoomPercentage !== 100 && 'text-accent',
-            )}
-          >
-            {zoomPercentage}%
-          </ToolbarButton>
+          <ZoomResetButton onZoomReset={onZoomReset} />
           <ToolbarButton onClick={onZoomIn} title="Zoom in (Ctrl+=)" className="px-2.5">
             <FontAwesomeIcon icon={faMagnifyingGlassPlus} className="w-3 h-3" />
           </ToolbarButton>
@@ -203,6 +191,24 @@ export default function Toolbox({
 }
 
 /* ── Sub-components ─────────────────────────────────────────── */
+
+// The only part of the toolbox that depends on the viewport — isolated so
+// panning/zooming re-renders this button rather than the whole canvas UI.
+function ZoomResetButton({ onZoomReset }: { onZoomReset: () => void }) {
+  const zoomPercentage = Math.round(useViewport().zoom * 100);
+  return (
+    <ToolbarButton
+      onClick={onZoomReset}
+      title="Reset zoom (Ctrl+0)"
+      className={cn(
+        'min-w-[52px] justify-center text-xs font-semibold tabular-nums',
+        zoomPercentage !== 100 && 'text-accent',
+      )}
+    >
+      {zoomPercentage}%
+    </ToolbarButton>
+  );
+}
 
 function Divider() {
   return <div className="w-px h-[18px] bg-border shrink-0" />;

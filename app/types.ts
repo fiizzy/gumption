@@ -70,10 +70,14 @@ export type TextStyle = Pick<
 // `branchParentId` is deliberately NOT named `parentId` — xyflow reserves
 // `Node.parentId` for its own sub-flow/grouping nesting feature, and
 // reusing that name would silently collide with it.
+export type ResponseStyle = 'concise' | 'detailed';
+
 export interface ConversationNodeData {
   [key: string]: unknown;
   prompt: string;
   response: string;
+  // The reply length/depth the user asked for when sending this prompt.
+  responseStyle: ResponseStyle;
   loading: boolean;
   minimized: boolean;
   color: string;
@@ -143,10 +147,20 @@ export type ResizeHandleKind = 'corner' | 'edge';
 // they can never go stale, since they're rebuilt from current component
 // state (activeNodeId, etc.) on every pass instead of being captured once
 // at node-creation time. ──
+// Set when this card is the visible top of a stacked thread.
+export interface DeckSummary {
+  cardCount: number;
+}
+
 export interface HydratedConversationNodeData extends ConversationNodeData {
   branchParentPromptPreview: string | undefined;
   isBranchActive: boolean;
   isBindingTarget: boolean;
+  deck: DeckSummary | null;
+  // Stacking is on but this card's thread has been fanned out.
+  canRestack: boolean;
+  onExpandThread: () => void;
+  onRestackThread: () => void;
   onToggleBranch: () => void;
   onFocusNode: () => void;
   onExpandNode: () => void;

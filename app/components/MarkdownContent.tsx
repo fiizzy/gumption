@@ -1,5 +1,6 @@
 "use client";
 
+import { memo } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
@@ -62,7 +63,7 @@ interface Props {
   className?: string;
 }
 
-export default function MarkdownContent({ content, className }: Props) {
+function MarkdownContent({ content, className }: Props) {
   return (
     <div className={cn("cc-markdown", className)}>
       <ReactMarkdown remarkPlugins={REMARK_PLUGINS} rehypePlugins={REHYPE_PLUGINS} components={MARKDOWN_COMPONENTS}>
@@ -71,3 +72,5 @@ export default function MarkdownContent({ content, className }: Props) {
     </div>
   );
 }
+
+export default memo(MarkdownContent);

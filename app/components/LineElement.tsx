@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { memo, useMemo, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import { useReactFlow, type NodeProps } from "@xyflow/react";
 import type { HydratedLineElementNode } from "../types";
@@ -15,7 +15,7 @@ const SELECTION_HIGHLIGHT_OPACITY = 0.25;
 
 type Props = NodeProps<HydratedLineElementNode>;
 
-export default function LineElement({ data, selected }: Props) {
+function LineElement({ data, selected }: Props) {
   const { screenToFlowPosition } = useReactFlow();
   const [draggingEndpointIndex, setDraggingEndpointIndex] = useState<0 | 1 | null>(null);
 
@@ -114,3 +114,5 @@ export default function LineElement({ data, selected }: Props) {
     </div>
   );
 }
+
+export default memo(LineElement);

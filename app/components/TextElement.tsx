@@ -1,5 +1,6 @@
 "use client";
 
+import { memo } from "react";
 import type { NodeProps } from "@xyflow/react";
 import type { HydratedTextElementNode } from "../types";
 import { LINE_HEIGHT } from "../lib/elementStyle";
@@ -18,7 +19,7 @@ const TEXT_CORNER_HIT_SIZE = 14;
 const TEXT_EDGE_HIT_THICKNESS = 10;
 const SELECTION_OUTLINE_OFFSET = 4;
 
-export default function TextElement({ data, selected }: NodeProps<HydratedTextElementNode>) {
+function TextElement({ data, selected }: NodeProps<HydratedTextElementNode>) {
   const {
     text,
     width,
@@ -82,3 +83,5 @@ export default function TextElement({ data, selected }: NodeProps<HydratedTextEl
     </div>
   );
 }
+
+export default memo(TextElement);

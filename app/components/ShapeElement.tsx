@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { memo, useMemo } from "react";
 import type { NodeProps } from "@xyflow/react";
 import type { HydratedShapeElementNode } from "../types";
 import { TRANSPARENT_COLOR } from "../lib/color";
@@ -21,7 +21,7 @@ const BINDING_HIGHLIGHT_WIDTH = 6;
 const BINDING_HIGHLIGHT_OPACITY = 0.45;
 const LABEL_PADDING = 8;
 
-export default function ShapeElement({ data, selected }: NodeProps<HydratedShapeElementNode>) {
+function ShapeElement({ data, selected }: NodeProps<HydratedShapeElementNode>) {
   const {
     shapeKind,
     width,
@@ -116,3 +116,5 @@ export default function ShapeElement({ data, selected }: NodeProps<HydratedShape
     </div>
   );
 }
+
+export default memo(ShapeElement);

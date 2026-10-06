@@ -65,9 +65,19 @@ export function useCanvasHistory({ nodes, setNodes, isEditing }: Options) {
     };
   }, []);
 
+  // Set for automatic follow-up changes (e.g. the chat grid re-arranging
+  // after an edit): they fold into the current snapshot instead of becoming
+  // an undo step of their own, so Ctrl+Z goes straight back to the user's edit.
+  const shouldAmendNextCommitRef = useRef(false);
+
   const commit = useCallback(() => {
     const current = latestNodesRef.current;
     if (hasSameContent(committedRef.current, current)) return;
+    if (shouldAmendNextCommitRef.current) {
+      shouldAmendNextCommitRef.current = false;
+      committedRef.current = current;
+      return;
+    }
     pastRef.current.push(committedRef.current);
     if (pastRef.current.length > HISTORY_LIMIT) pastRef.current.shift();
     futureRef.current = [];
@@ -148,8 +158,16 @@ export function useCanvasHistory({ nodes, setNodes, isEditing }: Options) {
     [setNodes],
   );
 
+  // Commits whatever is pending now, then marks the next change as an
+  // automatic amendment of it (see shouldAmendNextCommitRef).
+  const amendNextChange = useCallback(() => {
+    commit();
+    shouldAmendNextCommitRef.current = true;
+  }, [commit]);
+
   return {
     undo,
+    amendNextChange,
     redo,
     reset,
     patchNodeEverywhere,

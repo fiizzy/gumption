@@ -30,6 +30,7 @@ import Toolbox from "./Toolbox";
 import type { DrawingMode, Mode } from "./Toolbox";
 import StylePanel, { type StyleSource } from "./StylePanel";
 import MainMenu from "./MainMenu";
+import SettingsMenu from "./SettingsMenu";
 import ConfirmDialog, { type ConfirmRequest } from "./ConfirmDialog";
 import ExportDialog, { type ExportSettings } from "./ExportDialog";
 import ShortcutsDialog from "./ShortcutsDialog";
@@ -67,6 +68,16 @@ import {
   type BindingCandidate,
 } from "../lib/geometry";
 import { useCanvasHistory } from "../lib/useCanvasHistory";
+import { useSettings } from "../lib/useSettings";
+import { ChatStyleContext } from "../lib/chatStyleContext";
+import {
+  applyThreadStacking,
+  arrangeChatsInGrid,
+  findDecks,
+  findThreads,
+  type StackedView,
+  type Thread,
+} from "../lib/threadStacks";
 import { DEFAULT_PROJECT_TITLE, useProjects } from "../lib/useProjects";
 import {
   CANVAS_FILE_EXTENSION,
@@ -121,6 +132,8 @@ const VIEWPORT_ANIMATION_MS = 500;
 const ZOOM_ANIMATION_MS = 200;
 const PAN_ON_SCROLL_SPEED = 1;
 const FIT_SELECTION_PADDING = 0.2;
+// Generous so fitted content clears the floating toolbars and chat input.
+const FIT_ALL_PADDING = 0.15;
 const FIT_SELECTION_MAX_ZOOM = 2;
 const NOTICE_DURATION_MS = 4000;
 const THEME_STORAGE_KEY = "canvas-chat:theme";
@@ -312,14 +325,32 @@ function CanvasChatInner() {
   const [isShortcutsOpen, setIsShortcutsOpen] = useState(false);
   const [notice, setNotice] = useState<Notice | null>(null);
 
+  const { settings, updateSettings } = useSettings();
+  // Threads the user fanned out while stacking is on (by root card id).
+  const [expandedThreadRootIds, setExpandedThreadRootIds] = useState<ReadonlySet<string>>(() => new Set());
+
   const nodesRef = useRef<CanvasNode[]>([]);
   useEffect(() => {
     nodesRef.current = nodes;
   }, [nodes]);
 
-  // Bound line endpoints are derived from their targets' current geometry;
-  // everything downstream (rendering, export, copy, save) reads this.
-  const resolvedNodes = useMemo(() => resolveLineBindings(nodes), [nodes]);
+  // The canvas as displayed: stacked threads collapse onto their root's
+  // position (display-only — stored positions are untouched), and bound
+  // line endpoints are derived from their targets' current geometry.
+  const decks = useMemo(
+    () => (settings.stackThreads ? findDecks(nodes, expandedThreadRootIds) : []),
+    [nodes, settings.stackThreads, expandedThreadRootIds],
+  );
+  const stackedView = useMemo(() => applyThreadStacking(nodes, decks), [nodes, decks]);
+  const displayedNodes = useMemo(() => resolveLineBindings(stackedView.nodes), [stackedView]);
+  const displayedNodesRef = useRef<CanvasNode[]>([]);
+  const stackedViewRef = useRef<StackedView>(stackedView);
+  useEffect(() => {
+    displayedNodesRef.current = displayedNodes;
+    stackedViewRef.current = stackedView;
+  }, [displayedNodes, stackedView]);
+  // Hit-testing/binding candidates: what's actually visible on the canvas.
+  const getVisibleNodes = useCallback(() => displayedNodesRef.current.filter((node) => !node.hidden), []);
 
   const themeRootRef = useRef<HTMLDivElement>(null);
   const canvasWrapperRef = useRef<HTMLDivElement>(null);
@@ -338,7 +369,6 @@ function CanvasChatInner() {
     zoomOut,
     fitView,
   } = useReactFlow<CanvasNode, BranchEdge>();
-  const viewport = useViewport(); // reactive — drives the zoom readout and draw preview
 
   const noticeIdRef = useRef(0);
   const notify = useCallback((text: string, tone: Notice["tone"] = "info") => {
@@ -386,6 +416,7 @@ function CanvasChatInner() {
     (document: CanvasDocument) => {
       setNodes(document.nodes);
       history.reset(document.nodes);
+      setExpandedThreadRootIds(new Set());
       setActiveNodeId(null);
       setEditingId(null);
       setModal(null);
@@ -500,26 +531,20 @@ function CanvasChatInner() {
     [getNode, getNodeDims, canvasWrapperCenter, setViewport],
   );
 
-  // Centres the centroid of all nodes at 100% zoom (deliberately not
-  // xyflow's bounding-box fitView — this keeps the original fit-all feel).
+  // Brings everything visible into view. Never zooms in past 100% — when
+  // it all fits, this just centres it at its natural size; when it doesn't
+  // (e.g. a long thread), it zooms out as far as needed instead of leaving
+  // part of the canvas off-screen.
   const fitAll = useCallback(() => {
-    const allNodes = getNodes();
-    if (!allNodes.length) return;
-    let centroidSumX = 0;
-    let centroidSumY = 0;
-    allNodes.forEach((node) => {
-      const { w, h } = getNodeDims(node.id);
-      centroidSumX += node.position.x + w / 2;
-      centroidSumY += node.position.y + h / 2;
+    const visibleNodes = getNodes().filter((node) => !node.hidden);
+    if (visibleNodes.length === 0) return;
+    void fitView({
+      nodes: visibleNodes.map((node) => ({ id: node.id })),
+      padding: FIT_ALL_PADDING,
+      maxZoom: 1,
+      duration: VIEWPORT_ANIMATION_MS,
     });
-    const centroidX = centroidSumX / allNodes.length;
-    const centroidY = centroidSumY / allNodes.length;
-    const { centerX, centerY } = canvasWrapperCenter();
-    setViewport(
-      { x: centerX - centroidX, y: centerY - centroidY, zoom: 1 },
-      { duration: VIEWPORT_ANIMATION_MS },
-    );
-  }, [getNodes, getNodeDims, canvasWrapperCenter, setViewport]);
+  }, [getNodes, fitView]);
 
   const zoomToSelection = useCallback(() => {
     const selectedNodes = nodesRef.current.filter((node) => node.selected);
@@ -586,10 +611,27 @@ function CanvasChatInner() {
     });
   }, []);
 
+  // Cards hidden inside a deck can still carry a stale `selected` flag
+  // (e.g. selected before stacking was switched on); actions on "the
+  // selection" must only ever touch what the user can see.
+  const isSelectedAndVisible = useCallback(
+    (node: CanvasNode) => !!node.selected && !stackedViewRef.current.hiddenIds.has(node.id),
+    [],
+  );
+
+  // A deck moves as a whole: its top card stands in for every card in it.
+  const withDeckMembers = useCallback((ids: Iterable<string>) => {
+    const expanded = new Set(ids);
+    for (const id of [...expanded]) {
+      stackedViewRef.current.deckByTopId.get(id)?.memberIds.forEach((memberId) => expanded.add(memberId));
+    }
+    return expanded;
+  }, []);
+
   const deleteSelection = useCallback(() => {
     setEditingId(null);
     setNodes((previous) => {
-      const deletedIds = new Set(previous.filter((node) => node.selected).map((node) => node.id));
+      const deletedIds = new Set(previous.filter(isSelectedAndVisible).map((node) => node.id));
       if (deletedIds.size === 0) return previous;
       const detached = detachLineBindings(
         previous,
@@ -597,16 +639,20 @@ function CanvasChatInner() {
       );
       return detached.filter((node) => !deletedIds.has(node.id));
     });
-  }, []);
+  }, [isSelectedAndVisible]);
 
   const duplicateSelection = useCallback(() => {
-    const selectedNodes = resolveLineBindings(nodesRef.current).filter((node) => node.selected);
+    const selectedNodes = displayedNodesRef.current.filter(isSelectedAndVisible);
     insertNodes(cloneNodes(selectedNodes, { x: DUPLICATE_OFFSET, y: DUPLICATE_OFFSET }));
-  }, [insertNodes]);
+  }, [insertNodes, isSelectedAndVisible]);
 
   const selectAll = useCallback(() => {
+    const hiddenIds = stackedViewRef.current.hiddenIds;
     setNodes((previous) =>
-      previous.map((node) => (node.selected ? node : ({ ...node, selected: true } as CanvasNode))),
+      previous.map((node) => {
+        const shouldSelect = !hiddenIds.has(node.id);
+        return !!node.selected === shouldSelect ? node : ({ ...node, selected: shouldSelect } as CanvasNode);
+      }),
     );
   }, []);
 
@@ -621,7 +667,7 @@ function CanvasChatInner() {
 
   const nudgeSelection = useCallback(
     (deltaX: number, deltaY: number) => {
-      const selectedIds = new Set(nodesRef.current.filter((node) => node.selected).map((node) => node.id));
+      const selectedIds = withDeckMembers(nodesRef.current.filter(isSelectedAndVisible).map((node) => node.id));
       if (selectedIds.size === 0) return;
       detachLinesMovedApart(selectedIds);
       setNodes((previous) =>
@@ -632,7 +678,7 @@ function CanvasChatInner() {
         ),
       );
     },
-    [detachLinesMovedApart],
+    [detachLinesMovedApart, isSelectedAndVisible, withDeckMembers],
   );
 
   const changeLayer = useCallback((direction: LayerDirection) => {
@@ -796,20 +842,51 @@ function CanvasChatInner() {
     const sanitizedChanges = changes.map((change) =>
       change.type === "dimensions" && change.setAttributes ? { ...change, setAttributes: false } : change,
     );
-    setNodes((previous) => applyNodeChanges(sanitizedChanges, previous));
+    const { deckByTopId } = stackedViewRef.current;
+    const deckMoves = sanitizedChanges.filter(
+      (change) => change.type === "position" && change.position && deckByTopId.has(change.id),
+    );
+    if (deckMoves.length === 0) {
+      setNodes((previous) => applyNodeChanges(sanitizedChanges, previous));
+      return;
+    }
+    // A deck is drawn at its root's stored position; dragging it shifts the
+    // whole thread by the same offset, keeping each card's own layout for
+    // when the thread is fanned out again.
+    setNodes((previous) => {
+      const positionById = new Map(previous.map((node) => [node.id, node.position]));
+      const memberMoves: NodeChange<CanvasNode>[] = deckMoves.flatMap((change) => {
+        if (change.type !== "position" || !change.position) return [];
+        const deck = deckByTopId.get(change.id)!;
+        const rootPosition = positionById.get(deck.rootId)!;
+        const deltaX = change.position.x - rootPosition.x;
+        const deltaY = change.position.y - rootPosition.y;
+        return deck.memberIds.map((memberId) => {
+          const position = positionById.get(memberId)!;
+          return {
+            id: memberId,
+            type: "position" as const,
+            position: { x: position.x + deltaX, y: position.y + deltaY },
+            dragging: memberId === change.id ? change.dragging : undefined,
+          };
+        });
+      });
+      const otherChanges = sanitizedChanges.filter((change) => !deckMoves.includes(change));
+      return applyNodeChanges([...otherChanges, ...memberMoves], previous);
+    });
   }, []);
 
   const onNodeDragStart = useCallback(
     (_event: unknown, _node: Node, draggedNodes: Node[]) => {
-      detachLinesMovedApart(new Set(draggedNodes.map((node) => node.id)));
+      detachLinesMovedApart(withDeckMembers(draggedNodes.map((node) => node.id)));
     },
-    [detachLinesMovedApart],
+    [detachLinesMovedApart, withDeckMembers],
   );
   const onSelectionDragStart = useCallback(
     (_event: unknown, draggedNodes: Node[]) => {
-      detachLinesMovedApart(new Set(draggedNodes.map((node) => node.id)));
+      detachLinesMovedApart(withDeckMembers(draggedNodes.map((node) => node.id)));
     },
-    [detachLinesMovedApart],
+    [detachLinesMovedApart, withDeckMembers],
   );
 
   // Chat nodes connect to each other only through branching (the separate
@@ -830,8 +907,9 @@ function CanvasChatInner() {
   // Dragging between two anchor handles draws an arrow bound at both ends.
   const onConnect = useCallback(
     (connection: Connection) => {
-      const sourceNode = nodesRef.current.find((node) => node.id === connection.source);
-      const targetNode = nodesRef.current.find((node) => node.id === connection.target);
+      const visibleNodes = getVisibleNodes();
+      const sourceNode = visibleNodes.find((node) => node.id === connection.source);
+      const targetNode = visibleNodes.find((node) => node.id === connection.target);
       const sourceSide = connection.sourceHandle?.slice(ANCHOR_HANDLE_PREFIX.length) as AnchorSide | undefined;
       const targetSide = connection.targetHandle?.slice(ANCHOR_HANDLE_PREFIX.length) as AnchorSide | undefined;
       if (!sourceNode || !targetNode || !sourceSide || !targetSide) return;
@@ -846,13 +924,13 @@ function CanvasChatInner() {
         { elementId: targetNode.id, focus: { ...endFocus } },
       );
     },
-    [createLine],
+    [createLine, getVisibleNodes],
   );
 
   const moveLineEndpoint = useCallback(
     (lineId: string, endpointIndex: 0 | 1, flowPoint: Point) => {
-      const currentNodes = nodesRef.current;
-      const line = resolveLineBindings(currentNodes).find(
+      const currentNodes = getVisibleNodes();
+      const line = currentNodes.find(
         (node): node is LineElementNode => node.id === lineId && node.type === "lineElement",
       );
       if (!line) return;
@@ -873,19 +951,19 @@ function CanvasChatInner() {
         },
       }));
     },
-    [getSnapRadius, updateNodeData],
+    [getSnapRadius, getVisibleNodes, updateNodeData],
   );
 
   const onPaneClick = useCallback(
     (event: ReactMouseEvent) => {
       if (mode === "text") {
         const point = screenToFlowPosition({ x: event.clientX, y: event.clientY });
-        const textUnderPointer = sortTopmostFirst(nodesRef.current).find((node) => {
+        const textUnderPointer = sortTopmostFirst(getVisibleNodes()).find((node) => {
           if (node.type !== "textElement") return false;
           const box = getNodeBox(node);
           return point.x >= box.x && point.x <= box.x + box.width && point.y >= box.y && point.y <= box.y + box.height;
         });
-        const target = textUnderPointer ?? findTopmostShapeAt(point, nodesRef.current);
+        const target = textUnderPointer ?? findTopmostShapeAt(point, getVisibleNodes());
         if (target) startEditing(target.id);
         else createTextAt(point);
         finishCreation();
@@ -893,7 +971,7 @@ function CanvasChatInner() {
       }
       setNodes((previous) => deselectAll(previous));
     },
-    [mode, screenToFlowPosition, startEditing, createTextAt, finishCreation],
+    [mode, screenToFlowPosition, getVisibleNodes, startEditing, createTextAt, finishCreation],
   );
 
   // Double-clicking empty canvas adds text there; inside a shape (even a
@@ -904,11 +982,11 @@ function CanvasChatInner() {
       if ((event.target as Element).closest(".react-flow__node")) return;
       if (!(event.target as Element).closest(".react-flow__pane")) return;
       const point = screenToFlowPosition({ x: event.clientX, y: event.clientY });
-      const shape = findTopmostShapeAt(point, nodesRef.current);
+      const shape = findTopmostShapeAt(point, getVisibleNodes());
       if (shape) startEditing(shape.id);
       else createTextAt(point);
     },
-    [effectiveMode, screenToFlowPosition, startEditing, createTextAt],
+    [effectiveMode, screenToFlowPosition, getVisibleNodes, startEditing, createTextAt],
   );
 
   const onNodeDoubleClick = useCallback(
@@ -933,7 +1011,7 @@ function CanvasChatInner() {
       const snapRadius = getSnapRadius();
       const startRaw = screenToFlowPosition({ x: event.clientX, y: event.clientY });
       const startCandidate: BindingCandidate | null = isLineKind
-        ? findBindingAt(startRaw, nodesRef.current, EMPTY_ID_SET, snapRadius)
+        ? findBindingAt(startRaw, getVisibleNodes(), EMPTY_ID_SET, snapRadius)
         : null;
       const start = startCandidate?.point ?? startRaw;
       let endCandidate: BindingCandidate | null = null;
@@ -947,7 +1025,7 @@ function CanvasChatInner() {
         if (isLineKind) {
           if (pointerEvent.shiftKey) raw = snapAngle(start, raw);
           const excludedIds = startCandidate ? new Set([startCandidate.binding.elementId]) : EMPTY_ID_SET;
-          endCandidate = findBindingAt(raw, nodesRef.current, excludedIds, snapRadius);
+          endCandidate = findBindingAt(raw, getVisibleNodes(), excludedIds, snapRadius);
           return endCandidate?.point ?? raw;
         }
         if (pointerEvent.shiftKey) {
@@ -987,7 +1065,7 @@ function CanvasChatInner() {
 
     wrapper.addEventListener("mousedown", onMouseDown);
     return () => wrapper.removeEventListener("mousedown", onMouseDown);
-  }, [isDragMode, effectiveMode, screenToFlowPosition, getSnapRadius, createLine, createShape, finishCreation]);
+  }, [isDragMode, effectiveMode, screenToFlowPosition, getSnapRadius, getVisibleNodes, createLine, createShape, finishCreation]);
 
   // ── Add a chat node + call the AI ───────────────────────────────
   //
@@ -1017,6 +1095,56 @@ function CanvasChatInner() {
     },
     [getNodeDims],
   );
+
+  // ── Chat grid: keeps chat cards (and decks) laid out in columns while the
+  // setting is on, re-arranging only when the set of chats or their sizes
+  // change — a card the user drags stays put until then. Each arrangement
+  // is an ordinary edit, so it's undoable. ──
+  const isArrangingRef = useRef(false);
+  const chatLayoutSignature = useMemo(() => {
+    if (!settings.gridColumns) return "";
+    return displayedNodes
+      .filter((node) => node.type === "conversation" && !node.hidden)
+      .map((node) => {
+        const box = getNodeBox(node);
+        return `${node.id}:${Math.round(box.width)}x${Math.round(box.height)}`;
+      })
+      .join("|");
+  }, [displayedNodes, settings.gridColumns]);
+
+  useEffect(() => {
+    const columns = settings.gridColumns;
+    if (!columns || !chatLayoutSignature) return;
+    const updates = arrangeChatsInGrid(nodesRef.current, displayedNodesRef.current, decks, columns);
+    if (updates.size === 0) return;
+    isArrangingRef.current = true;
+    history.amendNextChange();
+    setNodes((previous) =>
+      previous.map((node) => {
+        const position = updates.get(node.id);
+        return position ? ({ ...node, position } as CanvasNode) : node;
+      }),
+    );
+    // Only the signature (set of chats + sizes) and the column count should
+    // trigger a re-arrange, not every position change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chatLayoutSignature, settings.gridColumns, settings.stackThreads]);
+
+  // A new chat card is centred once it has settled into its displayed spot
+  // (after stacking/grid arrangement), not where it was first inserted.
+  const pendingFocusNodeIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    const pendingId = pendingFocusNodeIdRef.current;
+    if (!pendingId) return;
+    if (isArrangingRef.current) {
+      isArrangingRef.current = false;
+      return;
+    }
+    const displayed = displayedNodes.find((node) => node.id === pendingId);
+    if (!displayed) return;
+    pendingFocusNodeIdRef.current = null;
+    centerOn(displayed.position.x, displayed.position.y);
+  }, [displayedNodes, centerOn]);
 
   const addConversationNode = async (prompt: string) => {
     const nodeId = crypto.randomUUID();
@@ -1058,6 +1186,7 @@ function CanvasChatInner() {
         data: {
           prompt,
           response: "",
+          responseStyle: settings.responseStyle,
           loading: true,
           minimized: false,
           color: branchParentNode?.data.color ?? DEFAULT_COLOR,
@@ -1068,7 +1197,7 @@ function CanvasChatInner() {
       },
     ]);
     setActiveNodeId(nodeId);
-    centerOn(x, y);
+    pendingFocusNodeIdRef.current = nodeId;
 
     const requestProjectId = projects.currentProjectIdRef.current;
     inFlightRequestIdsRef.current.add(nodeId);
@@ -1079,6 +1208,7 @@ function CanvasChatInner() {
         branchParentNode?.data.prompt,
         branchParentNode?.data.response,
         projects.currentProject?.workingFolder,
+        settings.responseStyle,
       );
     } catch (error) {
       response = `⚠ ${errorMessage(error)}`;
@@ -1200,7 +1330,7 @@ function CanvasChatInner() {
   const exportImage = useCallback(
     async (settings: ExportSettings) => {
       const viewportElement = canvasWrapperRef.current?.querySelector<HTMLElement>(".react-flow__viewport");
-      const allNodes = resolveLineBindings(nodesRef.current);
+      const allNodes = getVisibleNodes();
       const exportedNodes = settings.isSelectionOnly ? allNodes.filter((node) => node.selected) : allNodes;
       const bounds: Box | null = getBoxesBounds(exportedNodes.map(getNodeBox));
       if (!viewportElement || !bounds) {
@@ -1258,7 +1388,7 @@ function CanvasChatInner() {
         setIsExporting(false);
       }
     },
-    [branchEdges, notify, projectTitle],
+    [branchEdges, getVisibleNodes, notify, projectTitle],
   );
 
   const isAnyDialogOpen = modal !== null || confirmRequest !== null || isExportOpen || isShortcutsOpen;
@@ -1456,139 +1586,208 @@ function CanvasChatInner() {
     };
   }, []);
 
-  // ── Hydration — attaches derived values + interaction callbacks fresh
-  // every render, so nothing captured in persisted state can go stale ──
-  const flowNodes = useMemo<HydratedCanvasNode[]>(
-    () =>
-      resolvedNodes.map((node): HydratedCanvasNode => {
-        const isEditing = editingId === node.id;
-        const isBindingTarget = bindingTargetId === node.id;
-        const editingOverrides = isEditing ? { draggable: false } : {};
-        // xyflow keeps a node visibility:hidden until it has measured it a
-        // frame later — and a hidden element can't take focus, which made the
-        // first keystrokes into a brand-new text element go missing. Known
-        // initial dimensions let it render visible from the first frame.
-        const { width: initialWidth, height: initialHeight } = getNodeBox(node);
-        node = { ...node, initialWidth, initialHeight };
-        switch (node.type) {
-          case "conversation": {
-            const branchParentNode = node.data.branchParentId
-              ? resolvedNodes.find((candidate) => candidate.id === node.data.branchParentId)
-              : undefined;
-            const branchParentPromptPreview =
-              branchParentNode?.type === "conversation" ? branchParentNode.data.prompt : undefined;
-            return {
-              ...node,
-              dragHandle: ".drag-handle",
-              data: {
-                ...node.data,
-                branchParentPromptPreview,
-                isBranchActive: activeNodeId === node.id,
-                isBindingTarget,
-                onToggleBranch: () => setActiveNodeId((previous) => (previous === node.id ? null : node.id)),
-                onFocusNode: () => focusNode(node.id),
-                onExpandNode: () =>
-                  setModal({
-                    prompt: node.data.prompt,
-                    response: node.data.response,
-                    parentPrompt: branchParentPromptPreview,
-                  }),
-                onColorChange: (color: string) =>
-                  updateNodeData<ConversationNodeState>(node.id, "conversation", (current) => ({
-                    data: { ...current.data, color },
-                  })),
-                onToggleMinimize: () =>
-                  updateNodeData<ConversationNodeState>(node.id, "conversation", (current) => ({
-                    data: { ...current.data, minimized: !current.data.minimized },
-                  })),
-                onResizeElement: (width: number, height: number, x: number, y: number) =>
-                  updateNodeData<ConversationNodeState>(node.id, "conversation", (current) => ({
-                    position: { x, y },
-                    data: { ...current.data, width, height },
-                  })),
-              },
-            };
-          }
-          case "textElement":
-            return {
-              ...node,
-              ...editingOverrides,
-              data: {
-                ...node.data,
-                isEditing,
-                isBindingTarget,
-                onTextChange: (text: string) =>
-                  updateNodeData<TextElementNode>(node.id, "textElement", (current) => ({
-                    data: { ...current.data, text },
-                  })),
-                onStopEditing: stopEditing,
-                onResizeElement: (width: number, x: number, y: number, handleKind: ResizeHandleKind) =>
-                  resizeTextElement(node.id, width, x, y, handleKind),
-              },
-            };
-          case "shapeElement":
-            return {
-              ...node,
-              ...editingOverrides,
-              // Unselected shapes are click-through except where their
-              // stroke (or fill) is actually painted; see ShapeElement.
-              style: node.selected ? undefined : { pointerEvents: "none" },
-              data: {
-                ...node.data,
-                isEditing,
-                isBindingTarget,
-                onLabelChange: (label: string) =>
-                  updateNodeData<ShapeElementNode>(node.id, "shapeElement", (current) => ({
-                    data: { ...current.data, label },
-                  })),
-                onStopEditing: stopEditing,
-                onResizeElement: (width: number, height: number, x: number, y: number) =>
-                  updateNodeData<ShapeElementNode>(node.id, "shapeElement", (current) => ({
-                    position: { x, y },
-                    data: { ...current.data, width, height },
-                  })),
-              },
-            };
-          case "lineElement":
-            return {
-              ...node,
-              style: { pointerEvents: "none" },
-              data: {
-                ...node.data,
-                onEndpointDrag: (endpointIndex: 0 | 1, flowPoint: Point) =>
-                  moveLineEndpoint(node.id, endpointIndex, flowPoint),
-                onEndpointDragEnd: () => setBindingTargetId(null),
-              },
-            };
-          case "imageElement":
-            return {
-              ...node,
-              data: {
-                ...node.data,
-                isBindingTarget,
-                onResizeElement: (width: number, height: number, x: number, y: number) =>
-                  updateNodeData<ImageElementNode>(node.id, "imageElement", (current) => ({
-                    position: { x, y },
-                    data: { ...current.data, width, height },
-                  })),
-              },
-            };
-        }
+  // ── Hydration — attaches derived values + interaction callbacks to each
+  // node. Callbacks go through `nodeActionsRef`, so they can be created once
+  // per node yet always reach the latest handlers. Hydrated nodes are cached
+  // and reused while their source node and flags are unchanged: xyflow (and
+  // the memoized node components) then skip re-rendering them, which keeps
+  // dragging one element from re-rendering every chat card's markdown. ──
+  const nodeActions = {
+    toggleBranch: (id: string) => setActiveNodeId((previous) => (previous === id ? null : id)),
+    focusNode,
+    expandNode: (id: string) => {
+      const node = nodesRef.current.find((candidate) => candidate.id === id);
+      if (node?.type !== "conversation") return;
+      const parent = nodesRef.current.find((candidate) => candidate.id === node.data.branchParentId);
+      setModal({
+        prompt: node.data.prompt,
+        response: node.data.response,
+        parentPrompt: parent?.type === "conversation" ? parent.data.prompt : undefined,
+      });
+    },
+    updateNodeData,
+    stopEditing,
+    resizeTextElement,
+    moveLineEndpoint,
+    clearBindingTarget: () => setBindingTargetId(null),
+    expandThread: (rootId: string) => setExpandedThreadRootIds((previous) => new Set(previous).add(rootId)),
+    restackThread: (rootId: string) =>
+      setExpandedThreadRootIds((previous) => {
+        const next = new Set(previous);
+        next.delete(rootId);
+        return next;
       }),
-    [
-      resolvedNodes,
-      editingId,
-      bindingTargetId,
-      activeNodeId,
-      focusNode,
-      updateNodeData,
-      stopEditing,
-      resizeTextElement,
-      moveLineEndpoint,
-    ],
-  );
+  };
+  const nodeActionsRef = useRef(nodeActions);
+  useEffect(() => {
+    nodeActionsRef.current = nodeActions;
+  });
 
-  const selectedNodes = nodes.filter((node) => node.selected);
+  const threadByMemberId = useMemo(() => {
+    const byMember = new Map<string, Thread>();
+    for (const thread of findThreads(nodes)) {
+      for (const memberId of thread.memberIds) byMember.set(memberId, thread);
+    }
+    return byMember;
+  }, [nodes]);
+
+  const hydrationCacheRef = useRef(new Map<string, { source: CanvasNode; flags: string; hydrated: HydratedCanvasNode }>());
+
+  const flowNodes = useMemo<HydratedCanvasNode[]>(() => {
+    const actions = nodeActionsRef;
+    const promptById = new Map(
+      displayedNodes.flatMap((node) => (node.type === "conversation" ? [[node.id, node.data.prompt] as const] : [])),
+    );
+
+    const hydrate = (source: CanvasNode, isEditing: boolean, isBindingTarget: boolean): HydratedCanvasNode => {
+      // xyflow keeps a node visibility:hidden until it has measured it a
+      // frame later — and a hidden element can't take focus, which made the
+      // first keystrokes into a brand-new text element go missing. Known
+      // initial dimensions let it render visible from the first frame.
+      const { width: initialWidth, height: initialHeight } = getNodeBox(source);
+      const node = { ...source, initialWidth, initialHeight };
+      const id = node.id;
+      const editingOverrides = isEditing ? { draggable: false } : {};
+      switch (node.type) {
+        case "conversation": {
+          const branchParentPromptPreview = node.data.branchParentId ? promptById.get(node.data.branchParentId) : undefined;
+          const deck = stackedView.deckByTopId.get(id);
+          const thread = threadByMemberId.get(id);
+          return {
+            ...node,
+            dragHandle: ".drag-handle",
+            data: {
+              ...node.data,
+              branchParentPromptPreview,
+              isBranchActive: activeNodeId === id,
+              isBindingTarget,
+              deck: deck ? { cardCount: deck.memberIds.length } : null,
+              canRestack:
+                settings.stackThreads && !!thread && thread.memberIds.length > 1 && expandedThreadRootIds.has(thread.rootId),
+              onToggleBranch: () => actions.current.toggleBranch(id),
+              onFocusNode: () => actions.current.focusNode(id),
+              onExpandNode: () => actions.current.expandNode(id),
+              onColorChange: (color: string) =>
+                actions.current.updateNodeData<ConversationNodeState>(id, "conversation", (current) => ({
+                  data: { ...current.data, color },
+                })),
+              onToggleMinimize: () =>
+                actions.current.updateNodeData<ConversationNodeState>(id, "conversation", (current) => ({
+                  data: { ...current.data, minimized: !current.data.minimized },
+                })),
+              onResizeElement: (width: number, height: number, x: number, y: number) =>
+                actions.current.updateNodeData<ConversationNodeState>(id, "conversation", (current) => ({
+                  position: { x, y },
+                  data: { ...current.data, width, height },
+                })),
+              onExpandThread: () => thread && actions.current.expandThread(thread.rootId),
+              onRestackThread: () => thread && actions.current.restackThread(thread.rootId),
+            },
+          };
+        }
+        case "textElement":
+          return {
+            ...node,
+            ...editingOverrides,
+            data: {
+              ...node.data,
+              isEditing,
+              isBindingTarget,
+              onTextChange: (text: string) =>
+                actions.current.updateNodeData<TextElementNode>(id, "textElement", (current) => ({
+                  data: { ...current.data, text },
+                })),
+              onStopEditing: () => actions.current.stopEditing(),
+              onResizeElement: (width: number, x: number, y: number, handleKind: ResizeHandleKind) =>
+                actions.current.resizeTextElement(id, width, x, y, handleKind),
+            },
+          };
+        case "shapeElement":
+          return {
+            ...node,
+            ...editingOverrides,
+            // Unselected shapes are click-through except where their
+            // stroke (or fill) is actually painted; see ShapeElement.
+            style: node.selected ? undefined : { pointerEvents: "none" },
+            data: {
+              ...node.data,
+              isEditing,
+              isBindingTarget,
+              onLabelChange: (label: string) =>
+                actions.current.updateNodeData<ShapeElementNode>(id, "shapeElement", (current) => ({
+                  data: { ...current.data, label },
+                })),
+              onStopEditing: () => actions.current.stopEditing(),
+              onResizeElement: (width: number, height: number, x: number, y: number) =>
+                actions.current.updateNodeData<ShapeElementNode>(id, "shapeElement", (current) => ({
+                  position: { x, y },
+                  data: { ...current.data, width, height },
+                })),
+            },
+          };
+        case "lineElement":
+          return {
+            ...node,
+            style: { pointerEvents: "none" },
+            data: {
+              ...node.data,
+              onEndpointDrag: (endpointIndex: 0 | 1, flowPoint: Point) =>
+                actions.current.moveLineEndpoint(id, endpointIndex, flowPoint),
+              onEndpointDragEnd: () => actions.current.clearBindingTarget(),
+            },
+          };
+        case "imageElement":
+          return {
+            ...node,
+            data: {
+              ...node.data,
+              isBindingTarget,
+              onResizeElement: (width: number, height: number, x: number, y: number) =>
+                actions.current.updateNodeData<ImageElementNode>(id, "imageElement", (current) => ({
+                  position: { x, y },
+                  data: { ...current.data, width, height },
+                })),
+            },
+          };
+      }
+    };
+
+    const previousCache = hydrationCacheRef.current;
+    const nextCache = new Map<string, { source: CanvasNode; flags: string; hydrated: HydratedCanvasNode }>();
+    const hydrated = displayedNodes.map((node) => {
+      const isEditing = editingId === node.id;
+      const isBindingTarget = bindingTargetId === node.id;
+      let flags = `${isEditing}|${isBindingTarget}`;
+      if (node.type === "conversation") {
+        const thread = threadByMemberId.get(node.id);
+        flags += [
+          activeNodeId === node.id,
+          node.data.branchParentId ? promptById.get(node.data.branchParentId) : "",
+          stackedView.deckByTopId.get(node.id)?.memberIds.length ?? 0,
+          settings.stackThreads && !!thread && expandedThreadRootIds.has(thread.rootId),
+          thread?.memberIds.length ?? 0,
+        ].join("|");
+      }
+      const cached = previousCache.get(node.id);
+      const result =
+        cached && cached.source === node && cached.flags === flags ? cached.hydrated : hydrate(node, isEditing, isBindingTarget);
+      nextCache.set(node.id, { source: node, flags, hydrated: result });
+      return result;
+    });
+    hydrationCacheRef.current = nextCache;
+    return hydrated;
+  }, [
+    displayedNodes,
+    stackedView,
+    threadByMemberId,
+    editingId,
+    bindingTargetId,
+    activeNodeId,
+    settings.stackThreads,
+    expandedThreadRootIds,
+  ]);
+
+  const selectedNodes = nodes.filter((node) => node.selected && !stackedView.hiddenIds.has(node.id));
   const selectedCount = selectedNodes.length;
   const activeNode = activeNodeId ? nodes.find((node) => node.id === activeNodeId) : undefined;
   const activeNodePrompt = activeNode?.type === "conversation" ? activeNode.data.prompt : undefined;
@@ -1610,18 +1809,6 @@ function CanvasChatInner() {
   const sidebarWidth = isProjectsSidebarCollapsed ? SIDEBAR_COLLAPSED_WIDTH : SIDEBAR_EXPANDED_WIDTH;
 
   const paneCursor = effectiveMode === "pan" ? "grab" : isCreationMode ? "crosshair" : "default";
-
-  // Wrapper-relative screen coordinates for the live shape/line/arrow
-  // preview — derived from flow coordinates and the (reactive) viewport.
-  const drawPreviewScreen = drawPreview
-    ? {
-        kind: drawPreview.kind,
-        x1: drawPreview.start.x * viewport.zoom + viewport.x,
-        y1: drawPreview.start.y * viewport.zoom + viewport.y,
-        x2: drawPreview.end.x * viewport.zoom + viewport.x,
-        y2: drawPreview.end.y * viewport.zoom + viewport.y,
-      }
-    : null;
 
   const onCanvasDragOver = (event: ReactDragEvent) => {
     if (event.dataTransfer.types.includes("Files")) {
@@ -1645,7 +1832,6 @@ function CanvasChatInner() {
       <Toolbox
         nodeCount={nodes.length}
         theme={theme}
-        scale={viewport.zoom}
         mode={effectiveMode}
         isToolLocked={isToolLocked}
         canUndo={history.canUndo}
@@ -1661,13 +1847,16 @@ function CanvasChatInner() {
         onZoomOut={() => zoomOut({ duration: ZOOM_ANIMATION_MS })}
         onZoomReset={resetZoomKeepingCenter}
         menuSlot={
-          <MainMenu
-            onOpenFile={requestOpenFile}
-            onSaveFile={() => void saveToFile()}
-            onExportImage={() => setIsExportOpen(true)}
-            onClearCanvas={requestClearCanvas}
-            onShowShortcuts={() => setIsShortcutsOpen(true)}
-          />
+          <>
+            <SettingsMenu settings={settings} onChange={updateSettings} />
+            <MainMenu
+              onOpenFile={requestOpenFile}
+              onSaveFile={() => void saveToFile()}
+              onExportImage={() => setIsExportOpen(true)}
+              onClearCanvas={requestClearCanvas}
+              onShowShortcuts={() => setIsShortcutsOpen(true)}
+            />
+          </>
         }
       />
 
@@ -1731,6 +1920,7 @@ function CanvasChatInner() {
         }}
       >
         <CanvasEdgeMarkerDefs />
+        <ChatStyleContext.Provider value={settings.chatStyle}>
         <ReactFlow<CanvasNode, BranchEdge>
           nodes={flowNodes}
           edges={branchEdges}
@@ -1778,9 +1968,10 @@ function CanvasChatInner() {
             color="var(--color-canvas-dot)"
           />
         </ReactFlow>
+        </ChatStyleContext.Provider>
 
         {/* Live preview while dragging out a new shape/line/arrow */}
-        {drawPreviewScreen && <DrawPreviewOverlay preview={drawPreviewScreen} />}
+        {drawPreview && <DrawPreviewOverlay preview={drawPreview} />}
       </div>
 
       {/* Selection count badge */}
@@ -1891,6 +2082,9 @@ function CanvasChatInner() {
         activeNodePrompt={activeNodePrompt}
         onSubmit={(prompt) => void addConversationNode(prompt)}
         onClearActive={() => setActiveNodeId(null)}
+        chatStyle={settings.chatStyle}
+        responseStyle={settings.responseStyle}
+        onResponseStyleChange={(responseStyle) => updateSettings({ responseStyle })}
       />
 
       <ConfirmDialog request={confirmRequest} onClose={() => setConfirmRequest(null)} />
@@ -1986,19 +2180,21 @@ function CanvasChatInner() {
   );
 }
 
-interface DrawPreviewScreen {
-  kind: DragDrawMode;
-  x1: number;
-  y1: number;
-  x2: number;
-  y2: number;
-}
 
 const SHAPE_PREVIEW_CORNER_RADIUS = 8;
 
 // Live outline shown while dragging out a new shape/line/arrow, in the
-// canvas wrapper's own screen space.
-function DrawPreviewOverlay({ preview }: { preview: DrawPreviewScreen }) {
+// canvas wrapper's own screen space. Subscribes to the viewport itself so
+// pan/zoom re-renders only this overlay, not the whole canvas.
+function DrawPreviewOverlay({ preview: flowPreview }: { preview: DrawPreview }) {
+  const viewport = useViewport();
+  const preview = {
+    kind: flowPreview.kind,
+    x1: flowPreview.start.x * viewport.zoom + viewport.x,
+    y1: flowPreview.start.y * viewport.zoom + viewport.y,
+    x2: flowPreview.end.x * viewport.zoom + viewport.x,
+    y2: flowPreview.end.y * viewport.zoom + viewport.y,
+  };
   const isLineKind = preview.kind === "line" || preview.kind === "arrow";
   const x = Math.min(preview.x1, preview.x2);
   const y = Math.min(preview.y1, preview.y2);

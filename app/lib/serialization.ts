@@ -139,6 +139,7 @@ function normalizeNode(rawNode: unknown, options: ParseOptions): CanvasNode | nu
         data: {
           prompt: readString(data.prompt, ""),
           response: wasInterrupted ? INTERRUPTED_RESPONSE_MESSAGE : readString(data.response, ""),
+          responseStyle: readEnum(data.responseStyle, ["concise", "detailed"], "concise"),
           loading: isLoading,
           minimized: data.minimized === true,
           color: readString(data.color, DEFAULT_COLOR),

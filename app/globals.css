@@ -48,6 +48,14 @@
   --color-branch-fg: #a5b4fc;
   --color-branch-border: #312e81;
 
+  /* ── Terminal chat style (identical in both themes) ── */
+  --color-terminal-surface: #0a0f0b;
+  --color-terminal-chrome: #121a14;
+  --color-terminal-border: #1d3324;
+  --color-terminal-text: #4ade80;
+  --color-terminal-dim: #2e8b57;
+  --color-terminal-bright: #bbf7d0;
+
   /* ── Shadows ──────────────────────────── */
   --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.5), 0 4px 16px rgba(0, 0, 0, 0.4);
   --shadow-card-active: 0 0 0 2px #5e6ad2, 0 4px 20px rgba(0, 0, 0, 0.5);
@@ -57,6 +65,7 @@
   --animate-thinking: cc-thinking 1.2s ease-in-out infinite;
   --animate-node-in: cc-fadein 0.22s cubic-bezier(0.4, 0, 0.2, 1) both;
   --animate-mode-toast: cc-toast 1.3s cubic-bezier(0.4, 0, 0.2, 1) both;
+  --animate-cursor-blink: cc-cursor-blink 1s steps(1) infinite;
 
   /* ── Sizes ────────────────────────────── */
   --width-node: 300px; /* → w-node */
@@ -207,6 +216,35 @@
   font-weight: 700;
 }
 
+/* ── Terminal chat style: markdown inside replies ── */
+.cc-terminal-markdown pre,
+.cc-terminal-markdown code,
+.cc-terminal-markdown th {
+  background: var(--color-terminal-chrome) !important;
+  border-color: var(--color-terminal-border) !important;
+  color: var(--color-terminal-bright);
+}
+.cc-terminal-markdown td,
+.cc-terminal-markdown blockquote {
+  border-color: var(--color-terminal-border) !important;
+}
+.cc-terminal-markdown a {
+  color: var(--color-terminal-bright);
+}
+.cc-terminal-markdown .hljs-keyword,
+.cc-terminal-markdown .hljs-number,
+.cc-terminal-markdown .hljs-literal,
+.cc-terminal-markdown .hljs-type {
+  color: var(--color-terminal-bright);
+}
+.cc-terminal-markdown .hljs-string,
+.cc-terminal-markdown .hljs-attr {
+  color: var(--color-terminal-text);
+}
+.cc-terminal-markdown .hljs-comment {
+  color: var(--color-terminal-dim);
+}
+
 /* ── Keyframes ── */
 @keyframes cc-thinking {
   0%,
@@ -217,6 +255,12 @@
   50% {
     opacity: 0.3;
     transform: scale(0.85);
+  }
+}
+
+@keyframes cc-cursor-blink {
+  50% {
+    opacity: 0;
   }
 }
 

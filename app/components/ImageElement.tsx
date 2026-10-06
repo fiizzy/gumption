@@ -1,5 +1,6 @@
 "use client";
 
+import { memo } from "react";
 import type { NodeProps } from "@xyflow/react";
 import type { HydratedImageElementNode } from "../types";
 import { cn } from "../lib/cn";
@@ -9,7 +10,7 @@ import ResizeHandles from "./ResizeHandles";
 const IMAGE_MIN_SIZE = 16;
 const SELECTION_OUTLINE_OFFSET = 4;
 
-export default function ImageElement({ data, selected }: NodeProps<HydratedImageElementNode>) {
+function ImageElement({ data, selected }: NodeProps<HydratedImageElementNode>) {
   const { src, width, height, opacity, isBindingTarget, onResizeElement } = data;
 
   return (
@@ -46,3 +47,5 @@ export default function ImageElement({ data, selected }: NodeProps<HydratedImage
     </div>
   );
 }
+
+export default memo(ImageElement);

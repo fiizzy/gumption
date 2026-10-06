@@ -15,7 +15,7 @@ import NewProjectModal from "./NewProjectModal";
 import WorkingFolderModal from "./WorkingFolderModal";
 import { canPickDirectory } from "../lib/fileAccess";
 import HarnessSwitcher from "./HarnessSwitcher";
-import type { Harness } from "../types";
+import type { FileAccess, Harness } from "../types";
 import type { ProjectSummary } from "../lib/projectStore";
 import { cn } from "../lib/cn";
 
@@ -47,6 +47,7 @@ interface Props {
   onCreateProject: (title: string, workingFolder: string | null) => void;
   onRenameProject: (projectId: string, title: string) => void;
   onChangeWorkingFolder: (projectId: string, workingFolder: string | null) => void;
+  onChangeFileAccess: (projectId: string, fileAccess: FileAccess) => void;
   onDeleteProject: (projectId: string) => void;
 }
 
@@ -61,6 +62,7 @@ export default function ProjectsSidebar({
   onCreateProject,
   onRenameProject,
   onChangeWorkingFolder,
+  onChangeFileAccess,
   onDeleteProject,
 }: Props) {
   const [isNewProjectModalOpen, setIsNewProjectModalOpen] = useState(false);
@@ -230,6 +232,7 @@ export default function ProjectsSidebar({
         project={projects.find((project) => project.id === folderProjectId) ?? null}
         onClose={() => setFolderProjectId(null)}
         onChange={onChangeWorkingFolder}
+        onFileAccessChange={onChangeFileAccess}
       />
 
       <NewProjectModal

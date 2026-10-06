@@ -1,5 +1,5 @@
 import { test, expect, drag, renderedNodes, savedNodes, expectSavedNodes } from "./fixtures";
-import type { Page } from "@playwright/test";
+import type { Locator, Page } from "@playwright/test";
 
 async function sendPrompt(page: Page, prompt: string) {
   const input = page.getByPlaceholder(/conversation|thread/);
@@ -26,11 +26,13 @@ async function buildThreads(page: Page) {
 }
 
 async function openSettings(page: Page) {
-  await page.getByRole("button", { name: "Settings" }).click();
-  return page.getByRole("dialog", { name: "Settings" });
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  return page.getByRole("dialog", { name: "Settings", exact: true });
 }
 
 const cards = (page: Page) => page.locator(".react-flow__node-conversation");
+// Matched by reply text — a prompt also appears in its follow-up's "branched from" chip.
+const card = (page: Page, prompt: string) => cards(page).filter({ hasText: `Mock reply: ${prompt}` });
 
 // Bring every chat into view (Shift+1), the way a user would before clicking.
 async function fitView(page: Page) {
@@ -40,11 +42,19 @@ async function fitView(page: Page) {
   await page.waitForTimeout(700);
 }
 
+// Hover a card and open its thread settings menu.
+async function openThreadMenu(page: Page, target: Locator) {
+  await target.hover();
+  await target.getByRole("button", { name: "Thread settings" }).click();
+  return target.getByRole("dialog", { name: "Thread settings" });
+}
+
 test.describe("chat styles and layout", () => {
-  test("response style toggle reaches the prompt and shows on the card", async ({ canvas: page }) => {
-    await page.getByRole("radio", { name: "Detailed" }).click();
+  test("response style dropdown reaches the prompt and shows on the card", async ({ canvas: page }) => {
+    await page.getByRole("button", { name: "Response style" }).click();
+    await page.getByRole("option", { name: /Detailed/ }).click();
     await sendPrompt(page, "Explain deeply");
-    await expect(cards(page)).toContainText("Detailed");
+    await expect(cards(page)).toContainText("detailed");
     const systemPrompt = await page.evaluate(() => {
       const call = (window as unknown as { __AI_CALLS: { args: string[] }[] }).__AI_CALLS[0];
       return call.args[call.args.length - 1];
@@ -53,46 +63,65 @@ test.describe("chat styles and layout", () => {
     await expectSavedNodes(page, ([node]) => node?.data.responseStyle === "detailed", "style saved on the card");
   });
 
-  test("terminal style restyles cards and input, and settings persist", async ({ canvas: page }) => {
+  test("terminal is the default style; standard can be chosen and persists", async ({ canvas: page }) => {
     await sendPrompt(page, "Hello");
-    const settings = await openSettings(page);
-    await settings.getByRole("button", { name: "Terminal" }).click();
     await expect(cards(page)).toContainText("you@canvas:~$ Hello");
-    await expect(cards(page).locator(".font-mono").first()).toBeVisible();
+    const settings = await openSettings(page);
+    await settings.getByRole("button", { name: "Standard" }).click();
+    await expect(cards(page)).not.toContainText("you@canvas");
     await page.reload();
     await page.waitForSelector(".react-flow__node-conversation");
-    await expect(cards(page)).toContainText("you@canvas:~$");
+    await expect(cards(page)).toContainText("You");
+    await expect(cards(page)).not.toContainText("you@canvas");
   });
 
-  test("stacking threads into decks, expanding and re-stacking", async ({ canvas: page }) => {
-    await buildThreads(page);
-    const settings = await openSettings(page);
-    await settings.getByRole("switch", { name: "Stack threads" }).click();
-    await page.keyboard.press("Escape");
-    await expect(cards(page)).toHaveCount(3);
-    await fitView(page);
-    await expect(page.getByRole("button", { name: "3 in thread" })).toBeVisible();
-    await expect(page.getByRole("button", { name: "2 in thread" })).toBeVisible();
-    // The deck shows the thread's latest card.
-    await expect(cards(page).filter({ hasText: "3 in thread" })).toContainText("Thread A third");
+  test("expand modal follows the chat style", async ({ canvas: page }) => {
+    await sendPrompt(page, "Show me in full");
+    await cards(page).getByRole("button", { name: "Open full content" }).click();
+    const modal = page.getByRole("dialog", { name: "Full conversation" });
+    await expect(modal).toContainText("claude@canvas");
+    await expect(modal).toContainText("you@canvas:~$ Show me in full");
+  });
 
-    await page.getByRole("button", { name: "3 in thread" }).click();
-    await expect(cards(page)).toHaveCount(5);
-    await page.getByRole("button", { name: "Stack", exact: true }).first().click();
-    await expect(cards(page)).toHaveCount(3);
+  test("per-thread stacking with deck arrows and thread color", async ({ canvas: page }) => {
+    await buildThreads(page);
+    await fitView(page);
+    const menu = await openThreadMenu(page, card(page, "Thread A second"));
+    await menu.getByRole("switch", { name: "Stack thread" }).click();
+    await page.keyboard.press("Escape");
+    await page.mouse.click(1500, 900);
+    // Thread A collapses to one deck; the standalone chat and thread B stay.
+    await expect(cards(page)).toHaveCount(4);
+    const deck = card(page, "Thread A third");
+    await expect(deck).toContainText("3 / 3");
+
+    await deck.hover();
+    await deck.getByRole("button", { name: "Previous card in thread" }).click();
+    await expect(card(page, "Thread A second")).toContainText("2 / 3");
+    await card(page, "Thread A second").getByRole("button", { name: "Next card in thread" }).click();
+    await expect(card(page, "Thread A third")).toContainText("3 / 3");
+
+    const deckMenu = await openThreadMenu(page, card(page, "Thread A third"));
+    await deckMenu.getByRole("button", { name: "Green" }).click();
+    await expectSavedNodes(
+      page,
+      (nodes) => nodes.filter((node) => String(node.data.prompt ?? "").startsWith("Thread A")).every((node) => node.data.color === "#86efac"),
+      "thread color applied to every card in the thread",
+    );
+    await deckMenu.getByRole("switch", { name: "Stack thread" }).click();
+    await expect(cards(page)).toHaveCount(6);
   });
 
   test("dragging a deck moves its whole thread; select-all never touches hidden cards", async ({ canvas: page }) => {
     await buildThreads(page);
     await expectSavedNodes(page, (nodes) => nodes.length === 6, "threads saved");
     const before = await savedNodes(page);
-    const settings = await openSettings(page);
-    await settings.getByRole("switch", { name: "Stack threads" }).click();
-    await page.keyboard.press("Escape");
+    await fitView(page);
+    const menu = await openThreadMenu(page, card(page, "Thread A second"));
+    await menu.getByRole("switch", { name: "Stack thread" }).click();
     await fitView(page);
 
-    const deck = cards(page).filter({ hasText: "3 in thread" });
-    const header = (await deck.locator(".drag-handle").boundingBox())!;
+    const header = (await card(page, "Thread A third").locator(".drag-handle").boundingBox())!;
     await drag(page, { x: header.x + 80, y: header.y + 12 }, { x: header.x + 180, y: header.y + 62 });
     await expectSavedNodes(
       page,
@@ -108,7 +137,7 @@ test.describe("chat styles and layout", () => {
     await page.mouse.click(1500, 900);
     await page.keyboard.press("Control+a");
     await page.keyboard.press("Delete");
-    await expectSavedNodes(page, (nodes) => nodes.length === 3, "only the 3 visible cards were deleted");
+    await expectSavedNodes(page, (nodes) => nodes.length === 2, "only the 4 visible cards were deleted");
     await page.keyboard.press("Control+z");
     await expectSavedNodes(page, (nodes) => nodes.length === 6, "undo restores them");
   });
@@ -138,5 +167,17 @@ test.describe("chat styles and layout", () => {
     await expect(cards(page)).toHaveCount(5);
     await page.keyboard.press("Control+z");
     await expect(cards(page)).toHaveCount(6);
+  });
+
+  test("thread lines can be dimmed and hidden", async ({ canvas: page }) => {
+    await sendPrompt(page, "Parent");
+    await sendPrompt(page, "Child");
+    const edge = page.locator(".react-flow__edge path").first();
+    await expect(edge).toHaveCSS("opacity", "0.2");
+    const settings = await openSettings(page);
+    await settings.getByLabel("Thread line opacity").fill("0.5");
+    await expect(edge).toHaveCSS("opacity", "0.5");
+    await settings.getByRole("switch", { name: "Show thread lines" }).click();
+    await expect(page.locator(".react-flow__edge")).toHaveCount(0);
   });
 });

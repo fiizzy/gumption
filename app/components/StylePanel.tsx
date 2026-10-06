@@ -15,16 +15,15 @@ import {
   faSquare,
   faRulerHorizontal,
   faSignature,
-  faFeatherPointed,
-  faFont,
-  faCode,
 } from "@fortawesome/free-solid-svg-icons";
 import type { IconDefinition } from "@fortawesome/fontawesome-svg-core";
-import type { ElementStyle, FillStyle, FontFamily, Sloppiness, StrokeStyle } from "../types";
+import type { ElementStyle, FillStyle, Sloppiness, StrokeStyle } from "../types";
 import ColorSwatches from "./ColorSwatches";
 import { BACKGROUND_SWATCHES, STROKE_SWATCHES, TRANSPARENT_COLOR } from "../lib/color";
 import { FONT_SIZE_OPTIONS, STROKE_WIDTH_OPTIONS } from "../lib/elementStyle";
 import { cn } from "../lib/cn";
+import { FONT_FAMILY_OPTIONS, getFontFamilyClass } from "../lib/fonts";
+import Dropdown from "./Dropdown";
 
 const STROKE_STYLE_OPTIONS: { value: StrokeStyle; label: string }[] = [
   { value: "solid", label: "Solid" },
@@ -41,12 +40,6 @@ const FILL_STYLE_OPTIONS: { value: FillStyle; label: string; icon: IconDefinitio
 const SLOPPINESS_OPTIONS: { value: Sloppiness; label: string; icon: IconDefinition }[] = [
   { value: "clean", label: "Clean", icon: faRulerHorizontal },
   { value: "sketchy", label: "Hand-drawn", icon: faSignature },
-];
-
-const FONT_FAMILY_OPTIONS: { value: FontFamily; label: string; icon: IconDefinition }[] = [
-  { value: "hand", label: "Hand-drawn", icon: faFeatherPointed },
-  { value: "sans", label: "Normal", icon: faFont },
-  { value: "mono", label: "Code", icon: faCode },
 ];
 
 // Previews of a stroke's width/dash pattern — value swatches, like the
@@ -118,7 +111,7 @@ export default function StylePanel({
       role="toolbar"
       aria-label="Element style"
       className="fixed z-[950] w-[212px] max-h-[calc(100vh-140px)] overflow-y-auto cc-scroll
-                 flex flex-col gap-3 p-3 rounded-xl bg-surface-raised border border-border shadow-card
+                 flex flex-col gap-3 p-3 rounded-xl bg-surface-raised border border-border 
                  select-none font-sans animate-node-in"
       style={style}
     >
@@ -223,18 +216,20 @@ export default function StylePanel({
       )}
 
       {fontFamily !== undefined && (
-        <Section title="Font family">
-          <ButtonRow>
-            {FONT_FAMILY_OPTIONS.map((option) => (
-              <OptionButton
-                key={option.value}
-                label={option.label}
-                isActive={fontFamily === option.value}
-                onClick={() => onStyleChange({ fontFamily: option.value })}
-              >
-                <FontAwesomeIcon icon={option.icon} className="w-3 h-3" />
-              </OptionButton>
-            ))}
+        <Section title="Font">
+          <div className="flex items-center gap-1">
+            <Dropdown
+              label="Font"
+              value={fontFamily}
+              options={FONT_FAMILY_OPTIONS.map((option) => ({
+                ...option,
+                labelClassName: cn("text-[14px]", getFontFamilyClass(option.value)),
+              }))}
+              onChange={(value) => onStyleChange({ fontFamily: value })}
+              style={{ flex: 1 }}
+              buttonClassName="w-full justify-between h-8 px-2.5 rounded-md bg-surface-subtle border-transparent text-foreground hover:border-border"
+              menuClassName="left-0 bg-surface-overlay border-border text-foreground"
+            />
             {fontWeight !== undefined && (
               <OptionButton
                 label="Bold"
@@ -244,7 +239,7 @@ export default function StylePanel({
                 <FontAwesomeIcon icon={faBold} className="w-3 h-3" />
               </OptionButton>
             )}
-          </ButtonRow>
+          </div>
         </Section>
       )}
 

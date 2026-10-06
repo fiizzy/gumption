@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import type { CanvasNode, Viewport } from "../types";
+import type { CanvasNode, FileAccess, Viewport } from "../types";
 import {
   deleteProjectDocument,
   loadProjectDocument,
@@ -152,6 +152,7 @@ export function useProjects(options: Options) {
         createdAt: now,
         updatedAt: now,
         workingFolder,
+        fileAccess: "ask",
       };
       try {
         await saveProjectDocument(project.id, createCanvasDocument([], null));
@@ -172,8 +173,14 @@ export function useProjects(options: Options) {
     [touchProject],
   );
 
+  // A different folder is a different grant — ask again before using it.
   const setWorkingFolder = useCallback(
-    (projectId: string, workingFolder: string | null) => touchProject(projectId, { workingFolder }),
+    (projectId: string, workingFolder: string | null) => touchProject(projectId, { workingFolder, fileAccess: "ask" }),
+    [touchProject],
+  );
+
+  const setFileAccess = useCallback(
+    (projectId: string, fileAccess: FileAccess) => touchProject(projectId, { fileAccess }),
     [touchProject],
   );
 
@@ -285,6 +292,7 @@ export function useProjects(options: Options) {
     createProject,
     renameProject,
     setWorkingFolder,
+    setFileAccess,
     deleteProject,
     notifyNodesChanged,
     scheduleSave,

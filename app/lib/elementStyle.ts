@@ -1,4 +1,4 @@
-import type { ElementStyle, FontFamily, StrokeStyle } from "../types";
+import type { ElementStyle, StrokeStyle } from "../types";
 import { THEME_STROKE_COLOR, TRANSPARENT_COLOR } from "./color";
 
 export const DEFAULT_ELEMENT_STYLE: ElementStyle = {
@@ -10,7 +10,7 @@ export const DEFAULT_ELEMENT_STYLE: ElementStyle = {
   sloppiness: "sketchy",
   opacity: 100,
   fontSize: 20,
-  fontFamily: "hand",
+  fontFamily: "casual",
   fontWeight: "normal",
 };
 
@@ -38,11 +38,6 @@ export function getStrokeDashArray(strokeStyle: StrokeStyle, strokeWidth: number
   if (strokeStyle === "dotted") return `1.5 ${6 + strokeWidth}`;
   return undefined;
 }
-
-export const FONT_FAMILY_CLASS: Record<Exclude<FontFamily, "hand">, string> = {
-  sans: "font-sans",
-  mono: "font-mono",
-};
 
 export function pickStyle<Key extends keyof ElementStyle>(
   style: ElementStyle,

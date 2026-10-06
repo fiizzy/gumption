@@ -12,6 +12,7 @@ import {
   faKeyboard,
 } from "@fortawesome/free-solid-svg-icons";
 import { cn } from "../lib/cn";
+import { TOOLBAR_ICON_BUTTON_CLASS, toolbarIconButtonStateClass } from "./Toolbox";
 
 interface MenuItem {
   label: string;
@@ -64,12 +65,7 @@ export default function MainMenu({ onOpenFile, onSaveFile, onExportImage, onClea
         title="Menu"
         aria-label="Menu"
         aria-expanded={isOpen}
-        className={cn(
-          "inline-flex items-center px-2.5 py-1 rounded-md text-sm border border-transparent cursor-pointer transition-colors",
-          isOpen
-            ? "bg-surface-subtle text-foreground border-border"
-            : "text-foreground-muted hover:bg-surface-subtle hover:text-foreground hover:border-border",
-        )}
+        className={cn(TOOLBAR_ICON_BUTTON_CLASS, toolbarIconButtonStateClass(false), isOpen && "bg-surface-subtle text-foreground")}
       >
         <FontAwesomeIcon icon={faBars} className="w-3.5 h-3.5" />
       </button>
@@ -77,7 +73,7 @@ export default function MainMenu({ onOpenFile, onSaveFile, onExportImage, onClea
       {isOpen && (
         <div
           role="menu"
-          className="absolute right-0 top-full mt-2 w-[240px] py-1.5 rounded-xl bg-surface-overlay border border-border shadow-card animate-node-in"
+          className="absolute right-0 top-full mt-2 w-[240px] py-1.5 rounded-xl bg-surface-overlay border border-border animate-node-in"
         >
           {items.map((item) => (
             <button

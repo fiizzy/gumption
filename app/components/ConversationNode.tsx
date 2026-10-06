@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useContext, useState } from "react";
+import { memo, useContext, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
@@ -10,13 +10,15 @@ import {
   faUpRightAndDownLeftFromCenter,
   faChevronDown,
   faChevronUp,
+  faChevronLeft,
+  faChevronRight,
   faCodeBranch,
   faLayerGroup,
   faTerminal,
 } from "@fortawesome/free-solid-svg-icons";
-import type { HydratedConversationNode, ResponseStyle } from "../types";
+import type { HydratedConversationNode, ResponseStyle, ThreadSummary } from "../types";
 import { cn } from "../lib/cn";
-import { DEFAULT_COLOR, isLightColor } from "../lib/color";
+import { DEFAULT_COLOR, SWATCHES, isLightColor } from "../lib/color";
 import { ChatStyleContext } from "../lib/chatStyleContext";
 import { MAX_VISIBLE_DECK_LAYERS } from "../lib/threadStacks";
 import ColorSwatches from "./ColorSwatches";
@@ -24,16 +26,18 @@ import MarkdownContent from "./MarkdownContent";
 import AnchorHandles from "./AnchorHandles";
 import ResizeHandles from "./ResizeHandles";
 import CopyButton from "./CopyButton";
+import ThinkingIndicator from "./ThinkingIndicator";
 
 // Handles are invisible connection points that only exist so the custom
 // "branch" edge knows which side of the card to attach to — end
 // users never drag new connections from them (isConnectable={false}).
 const HANDLE_STYLE = { opacity: 0, width: 1, height: 1, pointerEvents: "none" as const };
 
-const CONVERSATION_MIN_WIDTH = 280;
+export const CONVERSATION_MIN_WIDTH = 280;
 const CONVERSATION_MIN_HEIGHT = 160;
-// Collapsed "peek" strip height — fixed rather than content-derived, since
-// the card's overall height is user-resizable (data.height).
+// A card grows with its reply up to this height, then scrolls inside.
+const AUTO_HEIGHT_MAX = 640;
+// Collapsed "peek" strip height.
 const MINIMIZED_PEEK_HEIGHT = 96;
 const TITLE_MAX_LENGTH = 48;
 const BRANCH_PREVIEW_MAX_LENGTH = 42;
@@ -41,6 +45,9 @@ const BRANCH_PREVIEW_MAX_LENGTH = 42;
 const DECK_LAYER_OFFSET = 7;
 const DECK_LAYER_OPACITY_STEP = 0.18;
 const TERMINAL_TINT_STRIP_WIDTH = 3;
+// While streaming, keep following the newest text unless the user has
+// scrolled further up than this.
+const FOLLOW_SCROLL_THRESHOLD = 48;
 
 const RESPONSE_STYLE_LABEL: Record<ResponseStyle, string> = {
   concise: "Concise",
@@ -49,7 +56,7 @@ const RESPONSE_STYLE_LABEL: Record<ResponseStyle, string> = {
 
 // Colors/classes that differ between the standard card (optionally tinted)
 // and the terminal card.
-interface CardPalette {
+export interface CardPalette {
   surface: string;
   borderClass: string;
   activeBorderClass: string;
@@ -64,7 +71,7 @@ interface CardPalette {
   fontClass: string;
 }
 
-const TERMINAL_PALETTE: CardPalette = {
+export const TERMINAL_PALETTE: CardPalette = {
   surface: "var(--color-terminal-surface)",
   borderClass: "border-terminal-border",
   activeBorderClass: "border-terminal-text",
@@ -81,7 +88,7 @@ const TERMINAL_PALETTE: CardPalette = {
 
 // When the card has a user-selected tint, pick dark-on-light or
 // light-on-dark overlay colors based on that tint's own brightness.
-function getStandardPalette(color: string): CardPalette {
+export function getStandardPalette(color: string): CardPalette {
   const hasTint = color !== DEFAULT_COLOR;
   const tintIsLight = hasTint && isLightColor(color);
   const pick = (untinted: string, onLight: string, onDark: string) =>
@@ -106,6 +113,91 @@ function truncate(text: string, maxLength: number): string {
   return text.length > maxLength ? text.slice(0, maxLength) + "…" : text;
 }
 
+interface TranscriptProps {
+  prompt: string;
+  response: string;
+  responseStyle: ResponseStyle;
+  loading: boolean;
+  activity: string | null;
+  branchParentPromptPreview: string | undefined;
+  isTerminal: boolean;
+  palette: CardPalette;
+}
+
+// The prompt + reply body — shared by the card and the full-view modal so
+// both always look alike in either chat style.
+export function ConversationTranscript({
+  prompt,
+  response,
+  responseStyle,
+  loading,
+  activity,
+  branchParentPromptPreview,
+  isTerminal,
+  palette,
+}: TranscriptProps) {
+  return (
+    <>
+      {branchParentPromptPreview && (
+        <div
+          className={cn(
+            "inline-flex items-center gap-1 text-[11px] rounded-full px-2 py-0.5 mb-2.5 max-w-full truncate",
+            palette.chipTextClass,
+          )}
+          style={{ background: palette.chipBackground, border: `1px solid ${palette.chipBorder}` }}
+        >
+          <FontAwesomeIcon icon={faCodeBranch} className={cn("w-2 h-2", isTerminal ? "text-terminal-text" : "text-accent")} />
+          {truncate(branchParentPromptPreview, BRANCH_PREVIEW_MAX_LENGTH)}
+        </div>
+      )}
+
+      {isTerminal ? (
+        <p className="text-[13.5px] leading-relaxed m-0 mb-2.5 whitespace-pre-wrap break-words">
+          <span className="text-terminal-dim">you@canvas:~$ </span>
+          <span className="text-terminal-bright">{prompt}</span>
+        </p>
+      ) : (
+        <div className="mb-2.5">
+          <p className={cn("text-[10px] font-bold uppercase tracking-[0.08em] mb-1", palette.mutedClass)}>You</p>
+          <p className={cn("text-[14.5px] leading-relaxed m-0 whitespace-pre-wrap", palette.textClass)}>{prompt}</p>
+        </div>
+      )}
+
+      {!isTerminal && <div className="my-2.5 h-px" style={{ background: palette.separator }} />}
+
+      <div className="mb-1">
+        <div className="flex items-center justify-between mb-1 gap-2">
+          <p className={cn("text-[10px] font-bold uppercase tracking-[0.08em] m-0", palette.replyLabelClass)}>
+            {isTerminal ? `claude · ${RESPONSE_STYLE_LABEL[responseStyle].toLowerCase()}` : "AI"}
+            {!isTerminal && (
+              <span className={cn("ml-1.5 font-semibold normal-case tracking-normal opacity-80", palette.mutedClass)}>
+                · {RESPONSE_STYLE_LABEL[responseStyle]}
+              </span>
+            )}
+          </p>
+          {!loading && response && (
+            <CopyButton text={response} className={cn("opacity-60 hover:opacity-100 p-0.5", palette.mutedClass)} />
+          )}
+        </div>
+        {response && (
+          <MarkdownContent
+            content={response}
+            className={cn(
+              isTerminal ? "cc-terminal-markdown text-[13.5px] leading-[1.6]" : "text-[14.5px] leading-[1.65]",
+              palette.mutedClass,
+            )}
+          />
+        )}
+        {loading && (
+          <div className={response ? "mt-2" : undefined}>
+            <ThinkingIndicator activity={activity} isTerminal={isTerminal} />
+          </div>
+        )}
+      </div>
+    </>
+  );
+}
+
 function ConversationNode({ data, selected }: NodeProps<HydratedConversationNode>) {
   const {
     prompt,
@@ -116,41 +208,54 @@ function ConversationNode({ data, selected }: NodeProps<HydratedConversationNode
     color,
     width,
     height,
+    isHeightPinned,
     branchParentPromptPreview,
     isBranchActive,
     isBindingTarget,
-    deck,
-    canRestack,
+    thread,
+    activity,
     onToggleBranch,
     onFocusNode,
     onExpandNode,
     onColorChange,
     onToggleMinimize,
     onResizeElement,
-    onExpandThread,
-    onRestackThread,
+    onToggleThreadStack,
+    onThreadColorChange,
+    onShowAdjacentInDeck,
   } = data;
 
   const [showColors, setShowColors] = useState(false);
   const isTerminal = useContext(ChatStyleContext) === "terminal";
   const palette = isTerminal ? TERMINAL_PALETTE : getStandardPalette(color);
   const hasTint = color !== DEFAULT_COLOR;
+  const isDeckTop = !!thread?.isStacked && thread.deckIndex !== null;
+
+  // Follow the reply as it streams in, unless the user scrolled up to read.
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const isFollowingReplyRef = useRef(true);
+  useEffect(() => {
+    const scroller = scrollRef.current;
+    if (loading && scroller && isFollowingReplyRef.current) scroller.scrollTop = scroller.scrollHeight;
+  }, [response, loading]);
 
   // Title mirrors the AI's reply (first line, truncated) once one exists,
   // falling back to the prompt while the response is still loading.
   const titleSource = response.split("\n")[0].trim() || prompt;
   const isHighlighted = isBranchActive || selected;
-  const deckLayerCount = deck ? Math.min(deck.cardCount - 1, MAX_VISIBLE_DECK_LAYERS) : 0;
+  const deckLayerCount = isDeckTop ? Math.min(thread.cardCount - 1, MAX_VISIBLE_DECK_LAYERS) : 0;
   const cardFrameClass = cn("rounded-xl border", isHighlighted ? palette.activeBorderClass : palette.borderClass);
+  const isAutoHeight = !isHeightPinned && !minimized;
 
   return (
     <div
       style={{
         width,
-        // Minimized height is intrinsic (header + fixed peek + footer);
-        // expanded height is the user-resized value, with the body flexing
-        // to fill whatever's left after the fixed header/footer.
-        height: minimized ? undefined : height,
+        // Auto: grows with the content up to a cap. Pinned: the size the user
+        // resized it to. Minimized: header + fixed peek strip + footer.
+        height: minimized || isAutoHeight ? undefined : height,
+        minHeight: minimized ? undefined : CONVERSATION_MIN_HEIGHT,
+        maxHeight: isAutoHeight ? AUTO_HEIGHT_MAX : undefined,
         background: palette.surface,
       }}
       className={cn(
@@ -179,15 +284,38 @@ function ConversationNode({ data, selected }: NodeProps<HydratedConversationNode
         );
       })}
 
-      {/* Not rendered at all while minimized — the card's actual DOM height
-          is the collapsed peek strip then, not data.height, so resizing
-          against it would corrupt the stored size for once it's expanded. */}
-      {selected && !minimized && (
-        <ResizeHandles
-          minWidth={CONVERSATION_MIN_WIDTH}
-          minHeight={CONVERSATION_MIN_HEIGHT}
-          onResize={onResizeElement}
+      {isDeckTop && (
+        <>
+          <DeckArrow
+            direction={-1}
+            isDisabled={thread.deckIndex === 0}
+            isTerminal={isTerminal}
+            onClick={() => onShowAdjacentInDeck(-1)}
+          />
+          <DeckArrow
+            direction={1}
+            isDisabled={thread.deckIndex === thread.cardCount - 1}
+            isTerminal={isTerminal}
+            onClick={() => onShowAdjacentInDeck(1)}
+          />
+        </>
+      )}
+
+      {thread && (
+        <ThreadMenu
+          thread={thread}
+          color={color}
+          isTerminal={isTerminal}
+          isAlwaysVisible={selected}
+          onToggleStack={onToggleThreadStack}
+          onColorChange={onThreadColorChange}
         />
+      )}
+
+      {/* Not rendered while minimized — the card's DOM height is then the
+          peek strip, and resizing against it would corrupt the stored size. */}
+      {selected && !minimized && (
+        <ResizeHandles minWidth={CONVERSATION_MIN_WIDTH} minHeight={CONVERSATION_MIN_HEIGHT} onResize={onResizeElement} />
       )}
 
       <Handle type="target" position={Position.Top} id="branchTarget" isConnectable={false} style={HANDLE_STYLE} />
@@ -215,22 +343,15 @@ function ConversationNode({ data, selected }: NodeProps<HydratedConversationNode
           icon={isTerminal ? faTerminal : faGripVertical}
           className={cn("shrink-0 w-2.5 h-2.5", isTerminal ? "text-terminal-dim" : cn("opacity-40", palette.mutedClass))}
         />
-
         <span
           className={cn(
             "flex-1 truncate",
-            isTerminal ? "text-[13px] text-terminal-text" : "text-[14px] font-semibold tracking-tight",
-            !isTerminal && palette.textClass,
+            isTerminal ? "text-[13px] text-terminal-text" : cn("text-[14px] font-semibold tracking-tight", palette.textClass),
           )}
         >
           {truncate(titleSource, TITLE_MAX_LENGTH)}
         </span>
-
-        <HeaderButton
-          title="Centre on screen at 100 % zoom"
-          className={palette.mutedClass}
-          onClick={onFocusNode}
-        >
+        <HeaderButton title="Centre on screen at 100 % zoom" className={palette.mutedClass} onClick={onFocusNode}>
           <FontAwesomeIcon icon={faCrosshairs} className="w-3 h-3" />
         </HeaderButton>
         <HeaderButton title="Open full content" className={palette.mutedClass} onClick={onExpandNode}>
@@ -241,97 +362,33 @@ function ConversationNode({ data, selected }: NodeProps<HydratedConversationNode
         </HeaderButton>
       </div>
 
-      {/* ── Body — fills the remaining resized height and scrolls internally;
-          collapses to a fixed peek strip with a fade-out gradient ── */}
+      {/* ── Body — scrolls internally once the card hits its height (cap or
+          pinned); collapses to a fixed peek strip with a fade-out gradient ── */}
       <div
-        className="relative overflow-hidden transition-[height] duration-[280ms] ease-[cubic-bezier(0.4,0,0.2,1)] nodrag"
-        style={minimized ? { height: MINIMIZED_PEEK_HEIGHT } : { flex: "1 1 auto", minHeight: 0 }}
+        className="relative overflow-hidden nodrag flex flex-col"
+        style={minimized ? { height: MINIMIZED_PEEK_HEIGHT } : { flex: isAutoHeight ? "0 1 auto" : "1 1 auto", minHeight: 0 }}
       >
-        <div className="cc-scroll nowheel overflow-y-auto h-full px-3.5 pt-2.5 pb-3.5 cursor-auto">
-          {branchParentPromptPreview && (
-            <div
-              className={cn(
-                "inline-flex items-center gap-1 text-[11px] rounded-full px-2 py-0.5 mb-2.5 max-w-full truncate",
-                palette.chipTextClass,
-              )}
-              style={{ background: palette.chipBackground, border: `1px solid ${palette.chipBorder}` }}
-            >
-              <FontAwesomeIcon
-                icon={faCodeBranch}
-                className={cn("w-2 h-2", isTerminal ? "text-terminal-text" : "text-accent")}
-              />
-              {truncate(branchParentPromptPreview, BRANCH_PREVIEW_MAX_LENGTH)}
-            </div>
-          )}
-
-          {isTerminal ? (
-            <p className="text-[13.5px] leading-relaxed m-0 mb-2.5 whitespace-pre-wrap break-words">
-              <span className="text-terminal-dim">you@canvas:~$ </span>
-              <span className="text-terminal-bright">{prompt}</span>
-            </p>
-          ) : (
-            <div className="mb-2.5">
-              <p className={cn("text-[10px] font-bold uppercase tracking-[0.08em] mb-1", palette.mutedClass)}>
-                You
-              </p>
-              <p className={cn("text-[14.5px] leading-relaxed m-0", palette.textClass)}>{prompt}</p>
-            </div>
-          )}
-
-          {!isTerminal && <div className="my-2.5 h-px" style={{ background: palette.separator }} />}
-
-          <div className="mb-3">
-            <div className="flex items-center justify-between mb-1 gap-2">
-              <p
-                className={cn(
-                  "text-[10px] font-bold uppercase tracking-[0.08em] m-0",
-                  palette.replyLabelClass,
-                )}
-              >
-                {isTerminal ? `claude · ${RESPONSE_STYLE_LABEL[responseStyle].toLowerCase()}` : "AI"}
-                {!isTerminal && (
-                  <span className={cn("ml-1.5 font-semibold normal-case tracking-normal opacity-80", palette.mutedClass)}>
-                    · {RESPONSE_STYLE_LABEL[responseStyle]}
-                  </span>
-                )}
-              </p>
-              {!loading && response && (
-                <CopyButton text={response} className={cn("opacity-60 hover:opacity-100 p-0.5", palette.mutedClass)} />
-              )}
-            </div>
-            {loading ? (
-              isTerminal ? (
-                <div className="flex items-center gap-2 text-[13.5px] text-terminal-text">
-                  <span>thinking</span>
-                  <span className="inline-block w-2 h-4 bg-terminal-text animate-cursor-blink" />
-                </div>
-              ) : (
-                <div className="flex items-center gap-2 text-[14.5px] text-foreground-muted">
-                  <span className="flex gap-[3px]">
-                    {[0, 0.15, 0.3].map((delay, index) => (
-                      <span
-                        key={index}
-                        className="inline-block w-1.5 h-1.5 rounded-full bg-accent animate-thinking"
-                        style={{ animationDelay: `${delay}s` }}
-                      />
-                    ))}
-                  </span>
-                  <span className="italic">Thinking…</span>
-                </div>
-              )
-            ) : (
-              <MarkdownContent
-                content={response}
-                className={cn(
-                  isTerminal ? "cc-terminal-markdown text-[13.5px] leading-[1.6]" : "text-[14.5px] leading-[1.65]",
-                  palette.mutedClass,
-                )}
-              />
-            )}
-          </div>
+        <div
+          ref={scrollRef}
+          onScroll={(event) => {
+            const scroller = event.currentTarget;
+            isFollowingReplyRef.current =
+              scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < FOLLOW_SCROLL_THRESHOLD;
+          }}
+          className="cc-scroll nowheel overflow-y-auto min-h-0 px-3.5 pt-2.5 pb-3 cursor-auto"
+        >
+          <ConversationTranscript
+            prompt={prompt}
+            response={response}
+            responseStyle={responseStyle}
+            loading={loading}
+            activity={activity}
+            branchParentPromptPreview={branchParentPromptPreview}
+            isTerminal={isTerminal}
+            palette={palette}
+          />
         </div>
 
-        {/* Fade-out gradient over the peeked text when collapsed */}
         <div
           aria-hidden
           className={cn(
@@ -343,35 +400,22 @@ function ConversationNode({ data, selected }: NodeProps<HydratedConversationNode
       </div>
 
       {/* ── Actions footer — fixed like the header, never scrolls or collapses ── */}
-      <div className={cn("nodrag cursor-auto shrink-0 px-3.5 pt-2.5 pb-4 border-t", palette.dividerClass)}>
+      <div className={cn("nodrag cursor-auto shrink-0 px-3.5 pt-2.5 pb-3.5 border-t mt-auto", palette.dividerClass)}>
         <div className="flex items-center gap-1.5 flex-wrap">
           <CardButton isTerminal={isTerminal} isActive={isBranchActive} onClick={onToggleBranch}>
             <FontAwesomeIcon icon={faCodeBranch} className="w-2.5 h-2.5" />
             {isBranchActive ? "Branching…" : "Branch"}
           </CardButton>
-
           <CardButton isTerminal={isTerminal} onClick={() => setShowColors((shown) => !shown)}>
-            <span
-              className="inline-block w-2.5 h-2.5 rounded-full shrink-0"
-              style={{ background: color, border: "1.5px solid rgba(0,0,0,0.15)" }}
-            />
+            <span className="inline-block w-2.5 h-2.5 rounded-full shrink-0 border border-black/15" style={{ background: color }} />
             Color
           </CardButton>
-
-          {deck && (
-            <CardButton isTerminal={isTerminal} onClick={onExpandThread} title="Fan this thread out">
-              <FontAwesomeIcon icon={faLayerGroup} className="w-2.5 h-2.5" />
-              {deck.cardCount} in thread
-            </CardButton>
-          )}
-          {canRestack && (
-            <CardButton isTerminal={isTerminal} onClick={onRestackThread} title="Stack this thread back into a deck">
-              <FontAwesomeIcon icon={faLayerGroup} className="w-2.5 h-2.5" />
-              Stack
-            </CardButton>
+          {isDeckTop && (
+            <span className={cn("ml-auto text-[11px] tabular-nums", palette.mutedClass)}>
+              {thread.deckIndex! + 1} / {thread.cardCount}
+            </span>
           )}
         </div>
-
         {showColors && (
           <ColorSwatches
             color={color}
@@ -388,6 +432,146 @@ function ConversationNode({ data, selected }: NodeProps<HydratedConversationNode
 }
 
 export default memo(ConversationNode);
+
+const DECK_ARROW_SIZE = 28;
+const DECK_ARROW_OFFSET = -(DECK_ARROW_SIZE / 2 + 6);
+
+// Flips between the cards of a stacked thread.
+function DeckArrow({
+  direction,
+  isDisabled,
+  isTerminal,
+  onClick,
+}: {
+  direction: -1 | 1;
+  isDisabled: boolean;
+  isTerminal: boolean;
+  onClick: () => void;
+}) {
+  const label = direction === -1 ? "Previous card in thread" : "Next card in thread";
+  return (
+    <button
+      type="button"
+      title={label}
+      aria-label={label}
+      disabled={isDisabled}
+      onClick={(event) => {
+        event.stopPropagation();
+        onClick();
+      }}
+      className={cn(
+        "nodrag absolute top-1/2 -translate-y-1/2 z-30 flex items-center justify-center rounded-full border transition-colors",
+        isTerminal
+          ? "bg-terminal-chrome border-terminal-border text-terminal-text hover:border-terminal-text"
+          : "bg-surface-raised border-border text-foreground-muted hover:text-foreground hover:border-accent",
+        isDisabled ? "opacity-30 cursor-default" : "cursor-pointer",
+      )}
+      style={{
+        width: DECK_ARROW_SIZE,
+        height: DECK_ARROW_SIZE,
+        ...(direction === -1 ? { left: DECK_ARROW_OFFSET } : { right: DECK_ARROW_OFFSET }),
+      }}
+    >
+      <FontAwesomeIcon icon={direction === -1 ? faChevronLeft : faChevronRight} className="w-2.5 h-2.5" />
+    </button>
+  );
+}
+
+// Per-thread settings: shown on hover (or while the card is selected) for
+// any card that belongs to a thread.
+function ThreadMenu({
+  thread,
+  color,
+  isTerminal,
+  isAlwaysVisible,
+  onToggleStack,
+  onColorChange,
+}: {
+  thread: ThreadSummary;
+  color: string;
+  isTerminal: boolean;
+  isAlwaysVisible: boolean;
+  onToggleStack: () => void;
+  onColorChange: (color: string) => void;
+}) {
+  const [isOpen, setIsOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      if (!containerRef.current?.contains(event.target as Node)) setIsOpen(false);
+    };
+    window.addEventListener("pointerdown", closeOnOutsidePointer);
+    return () => window.removeEventListener("pointerdown", closeOnOutsidePointer);
+  }, [isOpen]);
+
+  const surfaceClass = isTerminal
+    ? "bg-terminal-chrome border-terminal-border text-terminal-text"
+    : "bg-surface-raised border-border text-foreground-muted";
+
+  return (
+    <div
+      ref={containerRef}
+      className={cn(
+        "nodrag absolute -top-9 right-0 z-30 transition-opacity",
+        isAlwaysVisible || isOpen ? "opacity-100" : "opacity-0 group-hover:opacity-100 focus-within:opacity-100",
+      )}
+    >
+      <button
+        type="button"
+        onClick={(event) => {
+          event.stopPropagation();
+          setIsOpen((open) => !open);
+        }}
+        title="Thread settings"
+        aria-label="Thread settings"
+        aria-expanded={isOpen}
+        className={cn("flex items-center gap-1.5 h-7 px-2.5 rounded-md border text-[11.5px] font-medium cursor-pointer", surfaceClass)}
+      >
+        <FontAwesomeIcon icon={faLayerGroup} className="w-2.5 h-2.5" />
+        Thread · {thread.cardCount}
+      </button>
+
+      {isOpen && (
+        <div
+          role="dialog"
+          aria-label="Thread settings"
+          className={cn("absolute right-0 top-full mt-1.5 w-[220px] p-3 flex flex-col gap-3 rounded-lg border cursor-auto", surfaceClass)}
+        >
+          <div className="flex items-center justify-between gap-3">
+            <span className={cn("text-[12.5px] font-medium", isTerminal ? "text-terminal-bright" : "text-foreground")}>
+              Stack thread
+            </span>
+            <button
+              role="switch"
+              aria-checked={thread.isStacked}
+              aria-label="Stack thread"
+              onClick={onToggleStack}
+              className={cn(
+                "relative w-9 h-5 rounded-full border-none cursor-pointer transition-colors shrink-0",
+                thread.isStacked ? (isTerminal ? "bg-terminal-text" : "bg-accent") : "bg-surface-subtle",
+              )}
+            >
+              <span
+                className={cn(
+                  "absolute top-0.5 w-4 h-4 rounded-full bg-white transition-[left]",
+                  thread.isStacked ? "left-[18px]" : "left-0.5",
+                )}
+              />
+            </button>
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <span className={cn("text-[12.5px] font-medium", isTerminal ? "text-terminal-bright" : "text-foreground")}>
+              Thread color
+            </span>
+            <ColorSwatches color={color} swatches={SWATCHES} onChange={onColorChange} />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 function HeaderButton({
   title,
@@ -423,18 +607,15 @@ function CardButton({
   onClick,
   isActive = false,
   isTerminal,
-  title,
 }: {
   children: ReactNode;
   onClick: () => void;
   isActive?: boolean;
   isTerminal: boolean;
-  title?: string;
 }) {
   return (
     <button
       onClick={onClick}
-      title={title}
       className={cn(
         "inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium border cursor-pointer transition-colors duration-100",
         isTerminal

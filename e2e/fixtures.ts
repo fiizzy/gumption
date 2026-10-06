@@ -16,32 +16,62 @@ export interface RenderedNode {
   z: number;
 }
 
-// Stubs Tauri's IPC so the shell "claude" call returns a canned reply after
-// `window.__AI_DELAY` ms. `isTauri()` stays false, so the app persists to
+// Stubs Tauri's IPC so the streamed "claude" process replies with canned
+// stream-json events (in a few chunks over `window.__AI_DELAY` ms), the way
+// the real CLI does. `isTauri()` stays false, so the app persists to
 // localStorage — each test gets a fresh browser context, hence fresh storage.
-const TAURI_STUB = `
-  window.__AI_DELAY = 300;
-  window.__AI_CALLS = [];
-  window.__TAURI_INTERNALS__ = {
+function installTauriStub() {
+  type StubWindow = Window & Record<string, unknown> & {
+    __AI_DELAY: number;
+    __AI_RESULT?: string;
+    __AI_CALLS: { program: string; args: string[]; options: unknown; onEvent: { id: number } }[];
+  };
+  const stubWindow = window as unknown as StubWindow;
+  stubWindow.__AI_DELAY = 300;
+  stubWindow.__AI_CALLS = [];
+  const chunkCount = 4;
+  stubWindow.__TAURI_INTERNALS__ = {
     metadata: { currentWindow: { label: "main" }, currentWebview: { windowLabel: "main", label: "main" } },
-    transformCallback: (callback) => { const id = Math.floor(Math.random() * 1e9); window["_" + id] = callback; return id; },
-    invoke: async (command, args) => {
-      if (command === "plugin:shell|execute") {
-        window.__AI_CALLS.push(args);
-        await new Promise((resolve) => setTimeout(resolve, window.__AI_DELAY));
-        const prompt = args.args[1].split("\\n").pop().slice(0, 60);
-        return { code: 0, signal: null, stdout: JSON.stringify({ is_error: false, result: "Mock reply: " + prompt }), stderr: "" };
-      }
-      throw new Error("not running in Tauri: " + command);
+    transformCallback: (callback: unknown) => {
+      const id = Math.floor(Math.random() * 1e9);
+      stubWindow[`_${id}`] = callback;
+      return id;
+    },
+    unregisterCallback: (id: number) => {
+      delete stubWindow[`_${id}`];
+    },
+    invoke: async (command: string, args: StubWindow["__AI_CALLS"][number]) => {
+      if (command !== "plugin:shell|spawn") throw new Error(`not running in Tauri: ${command}`);
+      stubWindow.__AI_CALLS.push(args);
+      const prompt = args.args[1].split("\n").pop()!.slice(0, 60);
+      const reply = stubWindow.__AI_RESULT || `Mock reply: ${prompt}`;
+      let index = 0;
+      const send = (message: unknown) =>
+        (stubWindow[`_${args.onEvent.id}`] as ((raw: unknown) => void) | undefined)?.({ index: index++, message });
+      const emit = (event: unknown) => send({ event: "Stdout", payload: `${JSON.stringify(event)}\n` });
+      const chunkLength = Math.ceil(reply.length / chunkCount);
+      void (async () => {
+        emit({ type: "stream_event", event: { type: "message_start" } });
+        for (let start = 0; start < reply.length; start += chunkLength) {
+          await new Promise((resolve) => setTimeout(resolve, stubWindow.__AI_DELAY / chunkCount));
+          emit({
+            type: "stream_event",
+            event: { type: "content_block_delta", delta: { type: "text_delta", text: reply.slice(start, start + chunkLength) } },
+          });
+        }
+        emit({ type: "result", is_error: false, result: reply });
+        send({ event: "Terminated", payload: { code: 0, signal: null } });
+      })();
+      return 4242;
     },
   };
-`;
+}
 
 export const test = base.extend<{ canvas: Page }>({
   canvas: async ({ page }, use) => {
     const pageErrors: string[] = [];
     page.on("pageerror", (error) => pageErrors.push(error.message));
-    await page.addInitScript(TAURI_STUB);
+    await page.addInitScript(installTauriStub);
     await page.goto("/");
     await page.waitForSelector(".react-flow__pane");
     await expect(page.getByRole("navigation", { name: "Projects" }).locator('[aria-current="page"]')).toBeVisible();
@@ -89,7 +119,7 @@ export interface StoredNode {
 }
 
 export interface StoredState {
-  index: { projects: { id: string; title: string; workingFolder: string | null }[]; lastOpenedProjectId: string | null };
+  index: { projects: { id: string; title: string; workingFolder: string | null; fileAccess: string }[]; lastOpenedProjectId: string | null };
   documents: Record<string, { nodes: StoredNode[]; viewport: unknown } | null>;
 }
 

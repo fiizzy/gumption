@@ -4,8 +4,9 @@ import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { faSliders } from "@fortawesome/free-solid-svg-icons";
-import { GRID_COLUMN_OPTIONS, type GridColumns, type Settings } from "../lib/useSettings";
+import { GRID_COLUMN_OPTIONS, THREAD_LINE_OPACITY_RANGE, type GridColumns, type Settings } from "../lib/useSettings";
 import { cn } from "../lib/cn";
+import { TOOLBAR_ICON_BUTTON_CLASS, toolbarIconButtonStateClass } from "./Toolbox";
 
 interface Props {
   settings: Settings;
@@ -39,12 +40,7 @@ export default function SettingsMenu({ settings, onChange }: Props) {
         title="Settings"
         aria-label="Settings"
         aria-expanded={isOpen}
-        className={cn(
-          "inline-flex items-center px-2.5 py-1 rounded-md text-sm border border-transparent cursor-pointer transition-colors",
-          isOpen
-            ? "bg-surface-subtle text-foreground border-border"
-            : "text-foreground-muted hover:bg-surface-subtle hover:text-foreground hover:border-border",
-        )}
+        className={cn(TOOLBAR_ICON_BUTTON_CLASS, toolbarIconButtonStateClass(false), isOpen && "bg-surface-subtle text-foreground")}
       >
         <FontAwesomeIcon icon={faSliders} className="w-3.5 h-3.5" />
       </button>
@@ -53,7 +49,7 @@ export default function SettingsMenu({ settings, onChange }: Props) {
         <div
           role="dialog"
           aria-label="Settings"
-          className="absolute right-0 top-full mt-2 w-[280px] p-4 flex flex-col gap-4 rounded-xl bg-surface-overlay border border-border shadow-card animate-node-in"
+          className="absolute right-0 top-full mt-2 w-[280px] p-4 flex flex-col gap-4 rounded-xl bg-surface-overlay border border-border animate-node-in"
         >
           <Setting label="Chat style">
             <Segmented
@@ -66,24 +62,40 @@ export default function SettingsMenu({ settings, onChange }: Props) {
             />
           </Setting>
 
-          <Setting label="Stack threads" description="Collapse each thread into a deck showing its latest card.">
-            <button
-              role="switch"
-              aria-checked={settings.stackThreads}
-              aria-label="Stack threads"
-              onClick={() => onChange({ stackThreads: !settings.stackThreads })}
-              className={cn(
-                "relative w-9 h-5 rounded-full border-none cursor-pointer transition-colors shrink-0",
-                settings.stackThreads ? "bg-accent" : "bg-surface-subtle",
-              )}
-            >
-              <span
+          <Setting label="Thread lines" description="The dotted connectors between chat cards in a thread.">
+            <div className="flex items-center gap-3 w-full">
+              <button
+                role="switch"
+                aria-checked={settings.showThreadLines}
+                aria-label="Show thread lines"
+                onClick={() => onChange({ showThreadLines: !settings.showThreadLines })}
                 className={cn(
-                  "absolute top-0.5 w-4 h-4 rounded-full bg-white shadow-card transition-[left]",
-                  settings.stackThreads ? "left-[18px]" : "left-0.5",
+                  "relative w-9 h-5 rounded-full border-none cursor-pointer transition-colors shrink-0",
+                  settings.showThreadLines ? "bg-accent" : "bg-surface-subtle",
                 )}
+              >
+                <span
+                  className={cn(
+                    "absolute top-0.5 w-4 h-4 rounded-full bg-white transition-[left]",
+                    settings.showThreadLines ? "left-[18px]" : "left-0.5",
+                  )}
+                />
+              </button>
+              <input
+                type="range"
+                aria-label="Thread line opacity"
+                disabled={!settings.showThreadLines}
+                min={THREAD_LINE_OPACITY_RANGE.min}
+                max={THREAD_LINE_OPACITY_RANGE.max}
+                step={THREAD_LINE_OPACITY_RANGE.step}
+                value={settings.threadLineOpacity}
+                onChange={(event) => onChange({ threadLineOpacity: Number(event.target.value) })}
+                className="flex-1 accent-accent cursor-pointer disabled:opacity-40 disabled:cursor-default"
               />
-            </button>
+              <span className="w-9 text-right text-[11px] tabular-nums text-foreground-muted">
+                {Math.round(settings.threadLineOpacity * 100)}%
+              </span>
+            </div>
           </Setting>
 
           <Setting label="Arrange chats" description="Keep chat cards in a grid with this many columns.">
@@ -107,7 +119,7 @@ function Setting({ label, description, children }: { label: string; description?
     <div className="flex flex-col gap-1.5">
       <span className="text-[13px] font-medium text-foreground">{label}</span>
       {description && <span className="text-[11.5px] text-foreground-muted leading-snug">{description}</span>}
-      <div className="flex">{children}</div>
+      <div className="flex w-full">{children}</div>
     </div>
   );
 }

@@ -21,7 +21,7 @@
     "fs:allow-remove",
     "fs:allow-rename",
     {
-      "identifier": "shell:allow-execute",
+      "identifier": "shell:allow-spawn",
       "allow": [
         {
           "name": "claude-code",
@@ -30,9 +30,29 @@
             "-p",
             { "validator": "[\\s\\S]*" },
             "--output-format",
-            "json",
+            "stream-json",
+            "--verbose",
+            "--include-partial-messages",
             "--no-session-persistence",
             "--tools=",
+            "--append-system-prompt",
+            { "validator": "[\\s\\S]*" }
+          ],
+          "sidecar": false
+        },
+        {
+          "name": "claude-code-readonly",
+          "cmd": "claude",
+          "args": [
+            "-p",
+            { "validator": "[\\s\\S]*" },
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--include-partial-messages",
+            "--no-session-persistence",
+            "--disallowedTools",
+            "Bash,Edit,Write,NotebookEdit",
             "--append-system-prompt",
             { "validator": "[\\s\\S]*" }
           ],
@@ -45,7 +65,9 @@
             "-p",
             { "validator": "[\\s\\S]*" },
             "--output-format",
-            "json",
+            "stream-json",
+            "--verbose",
+            "--include-partial-messages",
             "--no-session-persistence",
             "--permission-mode",
             "acceptEdits",

@@ -6,6 +6,8 @@ import { faCodeBranch } from "@fortawesome/free-solid-svg-icons";
 import type { BranchEdge } from "../types";
 
 const BRANCH_ICON_SIZE = 18;
+// Set on the canvas wrapper from the "Thread lines" setting.
+const THREAD_LINE_OPACITY = "var(--thread-line-opacity, 1)";
 
 // One-time SVG marker definitions, referenced by id from the edge
 // components below. Rendered once as a sibling of the ReactFlow canvas
@@ -36,6 +38,7 @@ export function BranchEdgeComponent({
         fill="none"
         strokeDasharray="5 4"
         markerEnd="url(#arrow-branch)"
+        style={{ opacity: THREAD_LINE_OPACITY }}
       />
       {/* Midpoint branch glyph — visually distinguishes this from a plain line */}
       <EdgeLabelRenderer>
@@ -49,6 +52,7 @@ export function BranchEdgeComponent({
             left: labelX,
             top: labelY,
             transform: "translate(-50%, -50%)",
+            opacity: THREAD_LINE_OPACITY,
           }}
         >
           <FontAwesomeIcon icon={faCodeBranch} className="w-2.5 h-2.5 text-foreground-muted" />

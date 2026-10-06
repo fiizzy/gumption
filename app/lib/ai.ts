@@ -1,14 +1,17 @@
 import { Command } from "@tauri-apps/plugin-shell";
-import type { ResponseStyle } from "./useSettings";
+import type { FileAccess, ResponseStyle } from "../types";
 
 const CHAT_CONTEXT = "You are answering inside a chat card on a visual canvas app.";
-const AGENT_CONTEXT =
+const READ_WRITE_CONTEXT =
   "You are answering inside a chat card on a visual canvas app, working in the user's " +
   "project folder. You can read, search and edit files there; shell commands are not " +
   "available. When you change files, end with a short summary of what you changed.";
+const READ_ONLY_CONTEXT =
+  "You are answering inside a chat card on a visual canvas app, working in the user's " +
+  "project folder. You can read and search files there but not change them; shell " +
+  "commands are not available. If a change is needed, describe it instead of making it.";
 
-// Concise suits the small card (long answers get cut off behind a scroll);
-// Detailed is for when the user wants depth and will expand the card.
+// Concise suits the small card; Detailed is for when the user wants depth.
 const RESPONSE_STYLE_INSTRUCTIONS: Record<ResponseStyle, string> = {
   concise:
     "Keep replies concise: 2-5 sentences unless the user explicitly asks for more " +
@@ -19,92 +22,151 @@ const RESPONSE_STYLE_INSTRUCTIONS: Record<ResponseStyle, string> = {
     "(short headings, lists, fenced code blocks) to keep it scannable.",
 };
 
-function buildSystemPrompt(context: string, responseStyle: ResponseStyle): string {
-  return `${context} ${RESPONSE_STYLE_INSTRUCTIONS[responseStyle]}`;
+// Each mode's argument list must match its scoped command in
+// src-tauri/capabilities/default.json exactly (same order, same literals).
+const STREAM_ARGUMENTS = ["--output-format", "stream-json", "--verbose", "--include-partial-messages", "--no-session-persistence"];
+const READ_ONLY_DISALLOWED_TOOLS = "Bash,Edit,Write,NotebookEdit";
+
+interface CommandMode {
+  name: string;
+  context: string;
+  arguments: string[];
 }
 
-// These argument lists must match the scoped commands in
-// src-tauri/capabilities/default.json exactly (same order, same literals).
-const CHAT_COMMAND = "claude-code";
-const AGENT_COMMAND = "claude-code-agent";
-const AGENT_PERMISSION_MODE = "acceptEdits";
-const AGENT_DISALLOWED_TOOLS = "Bash";
+// Without a folder (or without permission to use it) Claude is a plain chat
+// with every tool off — the app's own launch directory is never a safe
+// place to act. Edits are auto-accepted in read & edit mode because print
+// mode has nobody to approve prompts; the user granted that up front.
+function getCommandMode(fileAccess: FileAccess): CommandMode {
+  if (fileAccess === "readWrite") {
+    return {
+      name: "claude-code-agent",
+      context: READ_WRITE_CONTEXT,
+      arguments: ["--permission-mode", "acceptEdits", "--disallowedTools", "Bash"],
+    };
+  }
+  if (fileAccess === "readOnly") {
+    return {
+      name: "claude-code-readonly",
+      context: READ_ONLY_CONTEXT,
+      arguments: ["--disallowedTools", READ_ONLY_DISALLOWED_TOOLS],
+    };
+  }
+  return { name: "claude-code", context: CHAT_CONTEXT, arguments: ["--tools="] };
+}
 
-interface ClaudeResult {
-  is_error: boolean;
+interface StreamEvent {
+  type?: string;
+  event?: {
+    type?: string;
+    delta?: { type?: string; text?: string };
+    content_block?: { type?: string; name?: string };
+  };
   result?: string;
+  is_error?: boolean;
   error?: string;
 }
 
-// With a project working folder, Claude runs as an agent there: built-in
-// tools on, file edits auto-accepted (nobody is around to approve prompts in
-// print mode), shell disallowed. Without one there is no folder it could
-// safely act in — the app's own launch directory is not the user's project —
-// so it stays a plain chat with every tool switched off.
-function buildCommand(fullPrompt: string, workingFolder: string | null | undefined, responseStyle: ResponseStyle) {
-  if (workingFolder) {
-    return Command.create(
-      AGENT_COMMAND,
-      [
-        "-p",
-        fullPrompt,
-        "--output-format",
-        "json",
-        "--no-session-persistence",
-        "--permission-mode",
-        AGENT_PERMISSION_MODE,
-        "--disallowedTools",
-        AGENT_DISALLOWED_TOOLS,
-        "--append-system-prompt",
-        buildSystemPrompt(AGENT_CONTEXT, responseStyle),
-      ],
-      { cwd: workingFolder },
-    );
-  }
-  return Command.create(CHAT_COMMAND, [
-    "-p",
-    fullPrompt,
-    "--output-format",
-    "json",
-    "--no-session-persistence",
-    "--tools=",
-    "--append-system-prompt",
-    buildSystemPrompt(CHAT_CONTEXT, responseStyle),
-  ]);
+export interface AskClaudeOptions {
+  prompt: string;
+  parentPrompt?: string;
+  parentResponse?: string;
+  workingFolder: string | null;
+  fileAccess: FileAccess;
+  responseStyle: ResponseStyle;
+  // Called with the whole reply so far each time more text streams in.
+  onPartialText: (text: string) => void;
+  // Called when Claude starts using a tool (e.g. "Read"), for the activity line.
+  onToolUse: (toolName: string) => void;
 }
 
-export async function simulateAI(
-  prompt: string,
-  parentPrompt?: string,
-  parentResponse?: string,
-  workingFolder?: string | null,
-  responseStyle: ResponseStyle = "concise",
-): Promise<string> {
+// Runs Claude Code and streams its reply. Resolves with the final reply text.
+export function askClaude({
+  prompt,
+  parentPrompt,
+  parentResponse,
+  workingFolder,
+  fileAccess,
+  responseStyle,
+  onPartialText,
+  onToolUse,
+}: AskClaudeOptions): Promise<string> {
   const fullPrompt =
     parentPrompt && parentResponse
       ? `Earlier in this thread:\nQ: ${parentPrompt}\nA: ${parentResponse}\n\nNow the follow-up question:\n${prompt}`
       : prompt;
+  const mode = getCommandMode(workingFolder ? fileAccess : "none");
 
   // TODO(harness-switcher): dispatch on the selected harness (see
   // HarnessSwitcher.tsx / CanvasChatInner's selectedHarness state) once a
-  // second harness (e.g. Codex) is actually wired up — today this always
-  // shells out to Claude Code regardless of the toolbox's harness selector.
-  const output = await buildCommand(fullPrompt, workingFolder, responseStyle).execute();
+  // second harness (e.g. Codex) is actually wired up.
+  const command = Command.create(
+    mode.name,
+    ["-p", fullPrompt, ...STREAM_ARGUMENTS, ...mode.arguments, "--append-system-prompt", `${mode.context} ${RESPONSE_STYLE_INSTRUCTIONS[responseStyle]}`],
+    workingFolder && mode.name !== "claude-code" ? { cwd: workingFolder } : undefined,
+  );
 
-  if (output.code !== 0) {
-    throw new Error(`claude exited with code ${output.code}: ${output.stderr || output.stdout.slice(0, 200)}`);
-  }
+  return new Promise((resolve, reject) => {
+    let pendingOutput = "";
+    let streamedText = "";
+    let finalEvent: StreamEvent | null = null;
+    let stderr = "";
 
-  let parsed: ClaudeResult;
-  try {
-    parsed = JSON.parse(output.stdout);
-  } catch {
-    throw new Error(`Could not parse claude output: ${output.stdout.slice(0, 200)}`);
-  }
+    const handleLine = (line: string) => {
+      if (!line.trim()) return;
+      let parsed: StreamEvent;
+      try {
+        parsed = JSON.parse(line);
+      } catch {
+        return;
+      }
+      if (parsed.type === "result") {
+        finalEvent = parsed;
+        return;
+      }
+      if (parsed.type !== "stream_event" || !parsed.event) return;
+      const { event } = parsed;
+      // A new assistant message after a tool call: keep earlier text, separated.
+      if (event.type === "message_start" && streamedText) streamedText += "\n\n";
+      if (event.type === "content_block_start" && event.content_block?.type === "tool_use" && event.content_block.name) {
+        onToolUse(event.content_block.name);
+      }
+      if (event.type === "content_block_delta" && event.delta?.type === "text_delta" && event.delta.text) {
+        streamedText += event.delta.text;
+        onPartialText(streamedText);
+      }
+    };
 
-  if (parsed.is_error || !parsed.result) {
-    throw new Error(parsed.error || parsed.result || "claude returned an error with no message");
-  }
+    // Tauri delivers stdout in chunks that are usually — not always — whole
+    // lines, so buffer and split on newlines ourselves.
+    command.stdout.on("data", (chunk: string) => {
+      pendingOutput += chunk.endsWith("\n") ? chunk : `${chunk}\n`;
+      const lines = pendingOutput.split("\n");
+      pendingOutput = lines.pop() ?? "";
+      lines.forEach(handleLine);
+    });
+    command.stderr.on("data", (chunk: string) => {
+      stderr += chunk;
+    });
+    command.on("error", (error: string) => reject(new Error(error)));
+    command.on("close", ({ code }: { code: number | null }) => {
+      handleLine(pendingOutput);
+      const result = finalEvent as StreamEvent | null;
+      if (result && !result.is_error && result.result) {
+        resolve(result.result);
+        return;
+      }
+      if (result?.is_error) {
+        reject(new Error(result.error || result.result || "claude returned an error with no message"));
+        return;
+      }
+      if (code === 0 && streamedText) {
+        resolve(streamedText);
+        return;
+      }
+      reject(new Error(`claude exited with code ${code}: ${stderr.trim() || "no output"}`));
+    });
 
-  return parsed.result;
+    command.spawn().catch(reject);
+  });
 }

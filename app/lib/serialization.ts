@@ -146,6 +146,8 @@ function normalizeNode(rawNode: unknown, options: ParseOptions): CanvasNode | nu
           branchParentId: typeof data.branchParentId === "string" ? data.branchParentId : null,
           width: readSize(data.width, CONVERSATION_DEFAULT_WIDTH),
           height: readSize(data.height, CONVERSATION_DEFAULT_HEIGHT),
+          isHeightPinned: data.isHeightPinned === true,
+          isThreadStacked: data.isThreadStacked === true,
         },
       };
       return node;
@@ -159,7 +161,7 @@ function normalizeNode(rawNode: unknown, options: ParseOptions): CanvasNode | nu
           width: readSize(data.width, ELEMENT_DEFAULT_SIZE),
           strokeColor: readString(data.strokeColor, style.strokeColor),
           fontSize: readNumber(data.fontSize, style.fontSize, MIN_FONT_SIZE, MAX_FONT_SIZE),
-          fontFamily: readEnum(data.fontFamily, ["hand", "sans", "mono"], style.fontFamily),
+          fontFamily: readEnum(data.fontFamily, ["casual", "hand", "sans", "serif", "mono"], style.fontFamily),
           fontWeight: readEnum(data.fontWeight, ["normal", "bold"], style.fontWeight),
           opacity: readNumber(data.opacity, style.opacity, 0, MAX_OPACITY),
         },
@@ -184,7 +186,7 @@ function normalizeNode(rawNode: unknown, options: ParseOptions): CanvasNode | nu
           sloppiness: readEnum(data.sloppiness, ["clean", "sketchy"], style.sloppiness),
           opacity: readNumber(data.opacity, style.opacity, 0, MAX_OPACITY),
           fontSize: readNumber(data.fontSize, style.fontSize, MIN_FONT_SIZE, MAX_FONT_SIZE),
-          fontFamily: readEnum(data.fontFamily, ["hand", "sans", "mono"], style.fontFamily),
+          fontFamily: readEnum(data.fontFamily, ["casual", "hand", "sans", "serif", "mono"], style.fontFamily),
         },
       };
       return node;

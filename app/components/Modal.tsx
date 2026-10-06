@@ -51,7 +51,7 @@ export default function Modal({ isOpen, onClose, title, children, size = "small"
         aria-modal="true"
         aria-label={title}
         className={cn(
-          "bg-surface-overlay border border-border rounded-xl shadow-card-active w-full max-h-[85vh] flex flex-col font-sans animate-node-in",
+          "bg-surface-overlay border border-border rounded-xl w-full max-h-[85vh] flex flex-col font-sans animate-node-in",
           SIZE_CLASS[size],
         )}
         onClick={(event) => event.stopPropagation()}

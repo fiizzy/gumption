@@ -6,17 +6,23 @@ export type ChatStyle = "standard" | "terminal";
 export const GRID_COLUMN_OPTIONS = [3, 4, 5] as const;
 export type GridColumns = (typeof GRID_COLUMN_OPTIONS)[number] | null;
 
+// Thread lines are the dotted branch connectors between chat cards; kept
+// faint by default to cut visual clutter.
+export const THREAD_LINE_OPACITY_RANGE = { min: 0.05, max: 1, step: 0.05 } as const;
+
 export interface Settings {
   chatStyle: ChatStyle;
-  stackThreads: boolean;
+  showThreadLines: boolean;
+  threadLineOpacity: number;
   // null = chats stay where they are placed.
   gridColumns: GridColumns;
   responseStyle: ResponseStyle;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
-  chatStyle: "standard",
-  stackThreads: false,
+  chatStyle: "terminal",
+  showThreadLines: true,
+  threadLineOpacity: 0.2,
   gridColumns: null,
   responseStyle: "concise",
 };
@@ -27,8 +33,12 @@ function readStoredSettings(): Settings {
   try {
     const stored = JSON.parse(window.localStorage.getItem(SETTINGS_STORAGE_KEY) ?? "{}") as Partial<Settings>;
     return {
-      chatStyle: stored.chatStyle === "terminal" ? "terminal" : "standard",
-      stackThreads: stored.stackThreads === true,
+      chatStyle: stored.chatStyle === "standard" ? "standard" : "terminal",
+      showThreadLines: stored.showThreadLines !== false,
+      threadLineOpacity:
+        typeof stored.threadLineOpacity === "number"
+          ? Math.min(THREAD_LINE_OPACITY_RANGE.max, Math.max(THREAD_LINE_OPACITY_RANGE.min, stored.threadLineOpacity))
+          : DEFAULT_SETTINGS.threadLineOpacity,
       gridColumns: GRID_COLUMN_OPTIONS.find((option) => option === stored.gridColumns) ?? null,
       responseStyle: stored.responseStyle === "detailed" ? "detailed" : "concise",
     };

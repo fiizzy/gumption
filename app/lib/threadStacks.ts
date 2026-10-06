@@ -13,6 +13,8 @@ export interface Thread {
 export interface Deck {
   rootId: string;
   topId: string;
+  // The top card's 0-based place in the thread (creation order).
+  topIndex: number;
   memberIds: string[];
   // Where the deck sits: the thread root's own position.
   position: Point;
@@ -48,19 +50,28 @@ export function findThreads(nodes: CanvasNode[]): Thread[] {
   return [...threadsByRoot.values()];
 }
 
-// Stacked threads show only their most recent card, moved onto the root's
-// position; the rest are hidden. Positions here are display-only — the
+// A thread is stacked when its root card says so (stored with the canvas,
+// so it's per thread, saved and undoable). The deck shows one card — the one
+// the user flipped to (`topIdByRootId`), else the most recent — moved onto
+// the root's position; the rest are hidden. Positions here are display-only:
 // stored positions are untouched, so unstacking restores the layout.
-export function findDecks(nodes: CanvasNode[], expandedRootIds: ReadonlySet<string>): Deck[] {
-  const positionById = new Map(nodes.map((node) => [node.id, node.position]));
-  return findThreads(nodes)
-    .filter((thread) => thread.memberIds.length > 1 && !expandedRootIds.has(thread.rootId))
-    .map((thread) => ({
+export function findDecks(nodes: CanvasNode[], topIdByRootId: ReadonlyMap<string, string>): Deck[] {
+  const nodesById = new Map(nodes.map((node) => [node.id, node]));
+  return findThreads(nodes).flatMap((thread): Deck[] => {
+    const root = nodesById.get(thread.rootId);
+    if (thread.memberIds.length < 2 || root?.type !== "conversation" || !root.data.isThreadStacked) return [];
+    const chosenTopId = topIdByRootId.get(thread.rootId);
+    const topIndex = chosenTopId && thread.memberIds.includes(chosenTopId)
+      ? thread.memberIds.indexOf(chosenTopId)
+      : thread.memberIds.length - 1;
+    return [{
       rootId: thread.rootId,
-      topId: thread.memberIds[thread.memberIds.length - 1],
+      topId: thread.memberIds[topIndex],
+      topIndex,
       memberIds: thread.memberIds,
-      position: positionById.get(thread.rootId)!,
-    }));
+      position: root.position,
+    }];
+  });
 }
 
 export interface StackedView {

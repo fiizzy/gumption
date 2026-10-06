@@ -1,22 +1,27 @@
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
+import { useRef, useEffect } from 'react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import { faCodeBranch, faXmark, faPaperPlane } from '@fortawesome/free-solid-svg-icons';
 import type { ChatStyle, ResponseStyle } from '../lib/useSettings';
 import { cn } from '../lib/cn';
+import Dropdown, { type DropdownOption } from './Dropdown';
 
 const BRANCH_PREVIEW_MAX_LENGTH = 52;
 
-const RESPONSE_STYLE_OPTIONS: { value: ResponseStyle; label: string; title: string }[] = [
-  { value: 'concise', label: 'Concise', title: 'Short answers that fit the card' },
-  { value: 'detailed', label: 'Detailed', title: 'Thorough, structured answers' },
+const RESPONSE_STYLE_OPTIONS: DropdownOption<ResponseStyle>[] = [
+  { value: 'concise', label: 'Concise', description: 'Short answers that fit the card' },
+  { value: 'detailed', label: 'Detailed', description: 'Thorough, structured answers' },
 ];
 
 interface Props {
   activeNodeId: string | null;
   activeNodePrompt?: string;
-  onSubmit: (prompt: string) => void;
+  // Owned by the parent so a message held back (e.g. by the folder permission
+  // prompt) stays in the box until it's actually sent.
+  draft: string;
+  onDraftChange: (draft: string) => void;
+  onSubmit: () => void;
   onClearActive: () => void;
   chatStyle: ChatStyle;
   responseStyle: ResponseStyle;
@@ -26,33 +31,24 @@ interface Props {
 export default function ChatInput({
   activeNodeId,
   activeNodePrompt,
+  draft,
+  onDraftChange,
   onSubmit,
   onClearActive,
   chatStyle,
   responseStyle,
   onResponseStyleChange,
 }: Props) {
-  const [value, setValue] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
   const isTerminal = chatStyle === 'terminal';
-  const canSubmit = value.trim() !== '';
+  const canSubmit = draft.trim() !== '';
 
   useEffect(() => {
     if (activeNodeId) inputRef.current?.focus();
   }, [activeNodeId]);
 
-  const submit = () => {
-    const prompt = value.trim();
-    if (!prompt) return;
-    onSubmit(prompt);
-    setValue('');
-  };
-
   return (
-    <div
-      className={cn('fixed bottom-6 left-1/2 -translate-x-1/2 z-[200] w-[640px] max-w-[calc(100vw-32px)]', isTerminal ? 'font-mono' : 'font-sans')}
-      style={{ filter: 'drop-shadow(var(--shadow-input))' }}
-    >
+    <div className={cn('fixed bottom-6 left-1/2 -translate-x-1/2 z-[200] w-[640px] max-w-[calc(100vw-32px)]', isTerminal ? 'font-mono' : 'font-sans')}>
       {/* Branch context banner — slides down when active */}
       <div style={{ display: 'grid', gridTemplateRows: activeNodeId ? '1fr' : '0fr', transition: 'grid-template-rows 0.22s cubic-bezier(0.4,0,0.2,1)' }}>
         <div className="overflow-hidden">
@@ -89,23 +85,22 @@ export default function ChatInput({
       {/* Input row */}
       <div
         className={cn(
-          'flex items-center overflow-hidden border transition-colors duration-200',
+          'flex items-center border transition-colors duration-200',
           activeNodeId ? 'rounded-b-xl rounded-t-none' : 'rounded-xl',
           isTerminal
             ? cn('bg-terminal-surface', activeNodeId ? 'border-terminal-text' : 'border-terminal-border')
             : cn('bg-surface-overlay', activeNodeId ? 'border-accent' : 'border-border'),
         )}
-        style={{ boxShadow: 'var(--shadow-input)' }}
       >
         {isTerminal && <span className="pl-4 text-sm text-terminal-dim select-none">$</span>}
         <input
           ref={inputRef}
-          value={value}
-          onChange={(event) => setValue(event.target.value)}
+          value={draft}
+          onChange={(event) => onDraftChange(event.target.value)}
           onKeyDown={(event) => {
             if (event.key === 'Enter' && !event.shiftKey) {
               event.preventDefault();
-              submit();
+              onSubmit();
             }
             if (event.key === 'Escape' && activeNodeId) onClearActive();
           }}
@@ -119,43 +114,32 @@ export default function ChatInput({
           style={{ caretColor: isTerminal ? 'var(--color-terminal-text)' : 'var(--color-foreground)' }}
         />
 
-        <div
-          role="radiogroup"
-          aria-label="Response style"
-          className={cn(
-            'flex shrink-0 gap-0.5 p-0.5 mr-2 border',
-            isTerminal ? 'border-terminal-border' : 'rounded-lg bg-surface-subtle border-border',
+        <Dropdown
+          label="Response style"
+          value={responseStyle}
+          options={RESPONSE_STYLE_OPTIONS}
+          onChange={onResponseStyleChange}
+          opensUpward
+          style={{ marginRight: 8 }}
+          buttonClassName={cn(
+            'px-2.5 py-1 text-[11.5px] font-semibold',
+            isTerminal
+              ? 'bg-transparent border-terminal-border text-terminal-text hover:border-terminal-text'
+              : 'rounded-md bg-surface-subtle border-border text-foreground-muted hover:text-foreground',
           )}
-        >
-          {RESPONSE_STYLE_OPTIONS.map((option) => {
-            const isSelected = option.value === responseStyle;
-            return (
-              <button
-                key={option.value}
-                role="radio"
-                aria-checked={isSelected}
-                title={option.title}
-                onClick={() => onResponseStyleChange(option.value)}
-                className={cn(
-                  'px-2 py-1 text-[11px] font-semibold border-none cursor-pointer transition-colors',
-                  isTerminal
-                    ? isSelected
-                      ? 'bg-terminal-text text-terminal-surface'
-                      : 'bg-transparent text-terminal-dim hover:text-terminal-text'
-                    : cn('rounded-md', isSelected ? 'bg-accent text-white' : 'bg-transparent text-foreground-muted hover:text-foreground'),
-                )}
-              >
-                {option.label}
-              </button>
-            );
-          })}
-        </div>
+          menuClassName={
+            isTerminal
+              ? 'bg-terminal-chrome border-terminal-border text-terminal-text font-mono'
+              : 'bg-surface-overlay border-border text-foreground'
+          }
+        />
 
         <button
-          onClick={submit}
+          onClick={onSubmit}
           disabled={!canSubmit}
           className={cn(
             'self-stretch px-5 shrink-0 flex items-center gap-1.5 text-sm font-semibold border-none transition-colors duration-150',
+            activeNodeId ? 'rounded-br-xl' : 'rounded-r-xl',
             isTerminal
               ? canSubmit
                 ? 'bg-terminal-text text-terminal-surface cursor-pointer'

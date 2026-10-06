@@ -1,6 +1,9 @@
 import { isTauri } from "@tauri-apps/api/core";
 import { BaseDirectory, exists, mkdir, readTextFile, remove, rename, writeTextFile } from "@tauri-apps/plugin-fs";
 import type { CanvasDocument } from "./serialization";
+import type { FileAccess } from "../types";
+
+const FILE_ACCESS_LEVELS: FileAccess[] = ["ask", "readWrite", "readOnly", "none"];
 
 export interface ProjectSummary {
   id: string;
@@ -8,6 +11,7 @@ export interface ProjectSummary {
   createdAt: number;
   updatedAt: number;
   workingFolder: string | null;
+  fileAccess: FileAccess;
 }
 
 export interface ProjectIndex {
@@ -123,6 +127,7 @@ function normalizeIndex(value: unknown): ProjectIndex {
             createdAt: typeof project.createdAt === "number" ? project.createdAt : now,
             updatedAt: typeof project.updatedAt === "number" ? project.updatedAt : now,
             workingFolder: typeof project.workingFolder === "string" ? project.workingFolder : null,
+            fileAccess: FILE_ACCESS_LEVELS.includes(project.fileAccess as FileAccess) ? (project.fileAccess as FileAccess) : "ask",
           },
         ];
       })

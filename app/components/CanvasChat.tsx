@@ -25,7 +25,8 @@ import LineElementComponent from "./LineElement";
 import ImageElementComponent from "./ImageElement";
 import { BranchEdgeComponent, CanvasEdgeMarkerDefs } from "./CanvasEdges";
 import ChatInput from "./ChatInput";
-import Joystick from "./Joystick";
+import ConversationModal from "./ConversationModal";
+import FileAccessModal from "./FileAccessModal";
 import Toolbox from "./Toolbox";
 import type { DrawingMode, Mode } from "./Toolbox";
 import StylePanel, { type StyleSource } from "./StylePanel";
@@ -34,8 +35,6 @@ import SettingsMenu from "./SettingsMenu";
 import ConfirmDialog, { type ConfirmRequest } from "./ConfirmDialog";
 import ExportDialog, { type ExportSettings } from "./ExportDialog";
 import ShortcutsDialog from "./ShortcutsDialog";
-import MarkdownContent from "./MarkdownContent";
-import CopyButton from "./CopyButton";
 import { ANCHOR_HANDLE_PREFIX } from "./AnchorHandles";
 import ProjectsSidebar, { SIDEBAR_EXPANDED_WIDTH, SIDEBAR_COLLAPSED_WIDTH } from "./ProjectsSidebar";
 import { DEFAULT_COLOR, SWATCHES } from "../lib/color";
@@ -97,6 +96,7 @@ import type {
   CanvasNode,
   ConversationNode as ConversationNodeState,
   ElementStyle,
+  FileAccess,
   Harness,
   HydratedCanvasNode,
   ImageElementNode,
@@ -108,7 +108,7 @@ import type {
   ShapeKind,
   TextElementNode,
 } from "../types";
-import { simulateAI } from "../lib/ai";
+import { askClaude } from "../lib/ai";
 import { invoke } from "@tauri-apps/api/core";
 
 const NODE_W = 380;
@@ -118,7 +118,7 @@ const SCALE_MAX = 4;
 const SHAPE_DEFAULT_SIZE = 140;
 const SHAPE_MIN_DRAG_SIZE = 8;
 const CONVERSATION_DEFAULT_HEIGHT = 260;
-const TOP_PANEL_CLEARANCE = 80; // clears the floating toolbox (top-4 + its own height)
+const TOP_PANEL_CLEARANCE = 64; // clears the floating toolbox (top-3 + its own height)
 const STYLE_PANEL_GUTTER = 16;
 const DRAG_COMMIT_THRESHOLD_PX = 4; // screen px — below this a drag is treated as a click
 const SNAP_RADIUS_PX = 20; // screen px — how close an endpoint must be to bind/snap to an element
@@ -131,9 +131,10 @@ const IMAGE_STACK_OFFSET = 24;
 const VIEWPORT_ANIMATION_MS = 500;
 const ZOOM_ANIMATION_MS = 200;
 const PAN_ON_SCROLL_SPEED = 1;
-const FIT_SELECTION_PADDING = 0.2;
-// Generous so fitted content clears the floating toolbars and chat input.
-const FIT_ALL_PADDING = 0.15;
+const STREAM_FLUSH_INTERVAL_MS = 80;
+// Keeps fitted content clear of the floating toolbar (top) and chat input
+// (bottom), which sit over the canvas.
+const FIT_VIEW_PADDING = { top: "88px", bottom: "120px", left: "40px", right: "40px" } as const;
 const FIT_SELECTION_MAX_ZOOM = 2;
 const NOTICE_DURATION_MS = 4000;
 const THEME_STORAGE_KEY = "canvas-chat:theme";
@@ -141,6 +142,7 @@ const BRANCH_GAP = 52;
 const FREE_SPOT_GAP = 24;
 const FREE_SPOT_MAX_TRIES = 200;
 const EMPTY_ID_SET: ReadonlySet<string> = new Set();
+const NO_EDGES: BranchEdge[] = [];
 
 const CANVAS_FILE_FILTER: FileTypeFilter = {
   name: "Canvas Chat",
@@ -197,12 +199,6 @@ const nodeTypes = {
 const edgeTypes = {
   branch: BranchEdgeComponent,
 };
-
-interface ModalContent {
-  prompt: string;
-  response: string;
-  parentPrompt?: string;
-}
 
 type DragDrawMode = Exclude<DrawingMode, "text">;
 
@@ -314,7 +310,8 @@ function CanvasChatInner() {
   const [theme, setTheme] = useState<"light" | "dark">("dark");
   const [selectedHarness, setSelectedHarness] = useState<Harness>("claude");
   const [isProjectsSidebarCollapsed, setIsProjectsSidebarCollapsed] = useState(false);
-  const [modal, setModal] = useState<ModalContent | null>(null);
+  // The chat card shown in the full-view modal (read live, so it streams).
+  const [modalNodeId, setModalNodeId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [bindingTargetId, setBindingTargetId] = useState<string | null>(null);
   const [currentStyle, setCurrentStyle] = useState<ElementStyle>(DEFAULT_ELEMENT_STYLE);
@@ -326,8 +323,11 @@ function CanvasChatInner() {
   const [notice, setNotice] = useState<Notice | null>(null);
 
   const { settings, updateSettings } = useSettings();
-  // Threads the user fanned out while stacking is on (by root card id).
-  const [expandedThreadRootIds, setExpandedThreadRootIds] = useState<ReadonlySet<string>>(() => new Set());
+  // For stacked threads: the card the user flipped to with the deck arrows,
+  // by thread root id (session-only; a deck otherwise shows its latest card).
+  const [deckTopIdByRootId, setDeckTopIdByRootId] = useState<ReadonlyMap<string, string>>(() => new Map());
+  // Live tool activity of streaming replies, by chat card id (session-only).
+  const [activityByNodeId, setActivityByNodeId] = useState<ReadonlyMap<string, string>>(() => new Map());
 
   const nodesRef = useRef<CanvasNode[]>([]);
   useEffect(() => {
@@ -338,8 +338,8 @@ function CanvasChatInner() {
   // position (display-only — stored positions are untouched), and bound
   // line endpoints are derived from their targets' current geometry.
   const decks = useMemo(
-    () => (settings.stackThreads ? findDecks(nodes, expandedThreadRootIds) : []),
-    [nodes, settings.stackThreads, expandedThreadRootIds],
+    () => findDecks(nodes, deckTopIdByRootId),
+    [nodes, deckTopIdByRootId],
   );
   const stackedView = useMemo(() => applyThreadStacking(nodes, decks), [nodes, decks]);
   const displayedNodes = useMemo(() => resolveLineBindings(stackedView.nodes), [stackedView]);
@@ -416,10 +416,10 @@ function CanvasChatInner() {
     (document: CanvasDocument) => {
       setNodes(document.nodes);
       history.reset(document.nodes);
-      setExpandedThreadRootIds(new Set());
+      setDeckTopIdByRootId(new Map());
       setActiveNodeId(null);
       setEditingId(null);
-      setModal(null);
+      setModalNodeId(null);
       setViewport(document.viewport ?? { x: 0, y: 0, zoom: 1 });
     },
     [history, setViewport],
@@ -540,7 +540,7 @@ function CanvasChatInner() {
     if (visibleNodes.length === 0) return;
     void fitView({
       nodes: visibleNodes.map((node) => ({ id: node.id })),
-      padding: FIT_ALL_PADDING,
+      padding: FIT_VIEW_PADDING,
       maxZoom: 1,
       duration: VIEWPORT_ANIMATION_MS,
     });
@@ -551,7 +551,7 @@ function CanvasChatInner() {
     if (selectedNodes.length === 0) return;
     void fitView({
       nodes: selectedNodes.map((node) => ({ id: node.id })),
-      padding: FIT_SELECTION_PADDING,
+      padding: FIT_VIEW_PADDING,
       maxZoom: FIT_SELECTION_MAX_ZOOM,
       duration: VIEWPORT_ANIMATION_MS,
     });
@@ -1128,7 +1128,7 @@ function CanvasChatInner() {
     // Only the signature (set of chats + sizes) and the column count should
     // trigger a re-arrange, not every position change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chatLayoutSignature, settings.gridColumns, settings.stackThreads]);
+  }, [chatLayoutSignature, settings.gridColumns]);
 
   // A new chat card is centred once it has settled into its displayed spot
   // (after stacking/grid arrangement), not where it was first inserted.
@@ -1146,7 +1146,7 @@ function CanvasChatInner() {
     centerOn(displayed.position.x, displayed.position.y);
   }, [displayedNodes, centerOn]);
 
-  const addConversationNode = async (prompt: string) => {
+  const sendConversation = async (prompt: string, fileAccess: FileAccess) => {
     const nodeId = crypto.randomUUID();
     const conversationNodes = nodesRef.current.filter(
       (node): node is ConversationNodeState => node.type === "conversation",
@@ -1193,6 +1193,8 @@ function CanvasChatInner() {
           branchParentId: branchParentNode?.id ?? null,
           width: branchParentNode?.data.width ?? NODE_W,
           height: branchParentNode?.data.height ?? CONVERSATION_DEFAULT_HEIGHT,
+          isHeightPinned: false,
+          isThreadStacked: false,
         },
       },
     ]);
@@ -1200,28 +1202,84 @@ function CanvasChatInner() {
     pendingFocusNodeIdRef.current = nodeId;
 
     const requestProjectId = projects.currentProjectIdRef.current;
+    const isStillOnRequestProject = () => requestProjectId === projects.currentProjectIdRef.current;
     inFlightRequestIdsRef.current.add(nodeId);
+
+    // Streamed text is applied in batches — a patch per token would re-render
+    // (and re-snapshot) far more often than anyone can read.
+    let latestPartialText = "";
+    let flushTimer: ReturnType<typeof setTimeout> | null = null;
+    const flushPartialText = () => {
+      flushTimer = null;
+      if (!isStillOnRequestProject()) return;
+      const text = latestPartialText;
+      history.patchNodeEverywhere(nodeId, (node) =>
+        node.type === "conversation" ? { ...node.data, response: text } : node.data,
+      );
+    };
+
     let response: string;
     try {
-      response = await simulateAI(
+      response = await askClaude({
         prompt,
-        branchParentNode?.data.prompt,
-        branchParentNode?.data.response,
-        projects.currentProject?.workingFolder,
-        settings.responseStyle,
-      );
+        parentPrompt: branchParentNode?.data.prompt,
+        parentResponse: branchParentNode?.data.response,
+        workingFolder: projects.currentProject?.workingFolder ?? null,
+        fileAccess,
+        responseStyle: settings.responseStyle,
+        onPartialText: (text) => {
+          latestPartialText = text;
+          flushTimer ??= setTimeout(flushPartialText, STREAM_FLUSH_INTERVAL_MS);
+        },
+        onToolUse: (toolName) => setActivityByNodeId((previous) => new Map(previous).set(nodeId, toolName)),
+      });
     } catch (error) {
       response = `⚠ ${errorMessage(error)}`;
     }
+    if (flushTimer) clearTimeout(flushTimer);
     inFlightRequestIdsRef.current.delete(nodeId);
+    setActivityByNodeId((previous) => {
+      const next = new Map(previous);
+      next.delete(nodeId);
+      return next;
+    });
 
     const applyResponse = (node: CanvasNode): CanvasNode["data"] =>
       node.type === "conversation" ? { ...node.data, response, loading: false } : node.data;
-    if (requestProjectId === projects.currentProjectIdRef.current) {
+    if (isStillOnRequestProject()) {
       history.patchNodeEverywhere(nodeId, applyResponse);
     } else if (requestProjectId) {
       void projects.updateStoredNode(requestProjectId, nodeId, applyResponse);
     }
+  };
+
+  // The chat input's text lives here so a message waiting on the folder
+  // permission prompt isn't lost if the prompt is dismissed.
+  const [chatDraft, setChatDraft] = useState("");
+  const [pendingFileAccessPrompt, setPendingFileAccessPrompt] = useState<string | null>(null);
+
+  // First message in a project with a working folder asks what Claude may do
+  // there; the answer is remembered for the project.
+  const submitChatDraft = () => {
+    const prompt = chatDraft.trim();
+    if (!prompt) return;
+    const project = projects.currentProject;
+    if (project?.workingFolder && project.fileAccess === "ask") {
+      setPendingFileAccessPrompt(prompt);
+      return;
+    }
+    setChatDraft("");
+    void sendConversation(prompt, project?.fileAccess ?? "none");
+  };
+
+  const resolveFileAccessPrompt = (fileAccess: Exclude<FileAccess, "ask">) => {
+    const prompt = pendingFileAccessPrompt;
+    const project = projects.currentProject;
+    setPendingFileAccessPrompt(null);
+    if (!prompt || !project) return;
+    projects.setFileAccess(project.id, fileAccess);
+    setChatDraft("");
+    void sendConversation(prompt, fileAccess);
   };
 
   // A deleted (or undone) active node can't be branched from any more.
@@ -1391,7 +1449,7 @@ function CanvasChatInner() {
     [branchEdges, getVisibleNodes, notify, projectTitle],
   );
 
-  const isAnyDialogOpen = modal !== null || confirmRequest !== null || isExportOpen || isShortcutsOpen;
+  const isAnyDialogOpen = modalNodeId !== null || pendingFileAccessPrompt !== null || confirmRequest !== null || isExportOpen || isShortcutsOpen;
 
   // ── Keyboard shortcuts ─────────────────────────────────────────
   // Handlers read the latest closures through a ref so the window
@@ -1401,7 +1459,7 @@ function CanvasChatInner() {
   useEffect(() => {
     keyDownHandlerRef.current = (event: KeyboardEvent) => {
       if (isAnyDialogOpen) {
-        if (event.key === "Escape") setModal(null);
+        if (event.key === "Escape") setModalNodeId(null);
         return;
       }
       if (isEditableTarget(event.target)) return;
@@ -1595,33 +1653,41 @@ function CanvasChatInner() {
   const nodeActions = {
     toggleBranch: (id: string) => setActiveNodeId((previous) => (previous === id ? null : id)),
     focusNode,
-    expandNode: (id: string) => {
-      const node = nodesRef.current.find((candidate) => candidate.id === id);
-      if (node?.type !== "conversation") return;
-      const parent = nodesRef.current.find((candidate) => candidate.id === node.data.branchParentId);
-      setModal({
-        prompt: node.data.prompt,
-        response: node.data.response,
-        parentPrompt: parent?.type === "conversation" ? parent.data.prompt : undefined,
-      });
-    },
+    expandNode: (id: string) => setModalNodeId(id),
     updateNodeData,
     stopEditing,
     resizeTextElement,
     moveLineEndpoint,
     clearBindingTarget: () => setBindingTargetId(null),
-    expandThread: (rootId: string) => setExpandedThreadRootIds((previous) => new Set(previous).add(rootId)),
-    restackThread: (rootId: string) =>
-      setExpandedThreadRootIds((previous) => {
-        const next = new Set(previous);
-        next.delete(rootId);
-        return next;
-      }),
+    // Stacking is stored on the thread's root card, so it's saved and undoable.
+    toggleThreadStack: (rootId: string) =>
+      updateNodeData<ConversationNodeState>(rootId, "conversation", (current) => ({
+        data: { ...current.data, isThreadStacked: !current.data.isThreadStacked },
+      })),
+    colorThread: (memberIds: string[], color: string) => {
+      const members = new Set(memberIds);
+      setNodes((previous) =>
+        previous.map((node) =>
+          members.has(node.id) && node.type === "conversation" ? { ...node, data: { ...node.data, color } } : node,
+        ),
+      );
+    },
+    showAdjacentInDeck: (rootId: string, direction: -1 | 1) => {
+      const deck = [...stackedViewRef.current.deckByTopId.values()].find((candidate) => candidate.rootId === rootId);
+      if (!deck) return;
+      const nextIndex = Math.min(deck.memberIds.length - 1, Math.max(0, deck.topIndex + direction));
+      setDeckTopIdByRootId((previous) => new Map(previous).set(rootId, deck.memberIds[nextIndex]));
+    },
   };
   const nodeActionsRef = useRef(nodeActions);
   useEffect(() => {
     nodeActionsRef.current = nodeActions;
   });
+
+  const stackedRootIds = useMemo(
+    () => new Set(nodes.flatMap((node) => (node.type === "conversation" && node.data.isThreadStacked ? [node.id] : []))),
+    [nodes],
+  );
 
   const threadByMemberId = useMemo(() => {
     const byMember = new Map<string, Thread>();
@@ -1661,9 +1727,15 @@ function CanvasChatInner() {
               branchParentPromptPreview,
               isBranchActive: activeNodeId === id,
               isBindingTarget,
-              deck: deck ? { cardCount: deck.memberIds.length } : null,
-              canRestack:
-                settings.stackThreads && !!thread && thread.memberIds.length > 1 && expandedThreadRootIds.has(thread.rootId),
+              thread:
+                thread && thread.memberIds.length > 1
+                  ? {
+                      cardCount: thread.memberIds.length,
+                      isStacked: stackedRootIds.has(thread.rootId),
+                      deckIndex: deck ? deck.topIndex : null,
+                    }
+                  : null,
+              activity: activityByNodeId.get(id) ?? null,
               onToggleBranch: () => actions.current.toggleBranch(id),
               onFocusNode: () => actions.current.focusNode(id),
               onExpandNode: () => actions.current.expandNode(id),
@@ -1678,10 +1750,12 @@ function CanvasChatInner() {
               onResizeElement: (width: number, height: number, x: number, y: number) =>
                 actions.current.updateNodeData<ConversationNodeState>(id, "conversation", (current) => ({
                   position: { x, y },
-                  data: { ...current.data, width, height },
+                  // Resizing by hand fixes the height; it no longer auto-grows.
+                  data: { ...current.data, width, height, isHeightPinned: true },
                 })),
-              onExpandThread: () => thread && actions.current.expandThread(thread.rootId),
-              onRestackThread: () => thread && actions.current.restackThread(thread.rootId),
+              onToggleThreadStack: () => thread && actions.current.toggleThreadStack(thread.rootId),
+              onThreadColorChange: (color: string) => thread && actions.current.colorThread(thread.memberIds, color),
+              onShowAdjacentInDeck: (direction: -1 | 1) => thread && actions.current.showAdjacentInDeck(thread.rootId, direction),
             },
           };
         }
@@ -1763,9 +1837,10 @@ function CanvasChatInner() {
         flags += [
           activeNodeId === node.id,
           node.data.branchParentId ? promptById.get(node.data.branchParentId) : "",
-          stackedView.deckByTopId.get(node.id)?.memberIds.length ?? 0,
-          settings.stackThreads && !!thread && expandedThreadRootIds.has(thread.rootId),
+          stackedView.deckByTopId.get(node.id)?.topIndex ?? -1,
+          !!thread && stackedRootIds.has(thread.rootId),
           thread?.memberIds.length ?? 0,
+          activityByNodeId.get(node.id) ?? "",
         ].join("|");
       }
       const cached = previousCache.get(node.id);
@@ -1783,9 +1858,17 @@ function CanvasChatInner() {
     editingId,
     bindingTargetId,
     activeNodeId,
-    settings.stackThreads,
-    expandedThreadRootIds,
+    stackedRootIds,
+    activityByNodeId,
   ]);
+
+  const modalConversation = modalNodeId
+    ? nodes.find((node): node is ConversationNodeState => node.id === modalNodeId && node.type === "conversation")
+    : undefined;
+  const modalParentNode = modalConversation?.data.branchParentId
+    ? nodes.find((node) => node.id === modalConversation.data.branchParentId)
+    : undefined;
+  const modalParentPrompt = modalParentNode?.type === "conversation" ? modalParentNode.data.prompt : undefined;
 
   const selectedNodes = nodes.filter((node) => node.selected && !stackedView.hiddenIds.has(node.id));
   const selectedCount = selectedNodes.length;
@@ -1889,6 +1972,7 @@ function CanvasChatInner() {
         onCreateProject={(title, workingFolder) => void projects.createProject(title, workingFolder)}
         onRenameProject={projects.renameProject}
         onChangeWorkingFolder={projects.setWorkingFolder}
+        onChangeFileAccess={projects.setFileAccess}
         onDeleteProject={requestDeleteProject}
       />
 
@@ -1898,7 +1982,7 @@ function CanvasChatInner() {
         className={`absolute top-0 right-0 bottom-0 overflow-hidden transition-[left] duration-200 ease-in-out ${
           effectiveMode === "pan" ? "cc-pan-mode" : isCreationMode ? "cc-create-mode" : ""
         }`}
-        style={{ left: sidebarWidth }}
+        style={{ left: sidebarWidth, ["--thread-line-opacity" as string]: settings.threadLineOpacity }}
         onContextMenu={(event) => event.preventDefault()}
         onDoubleClick={onCanvasDoubleClick}
         onDragOver={onCanvasDragOver}
@@ -1923,7 +2007,7 @@ function CanvasChatInner() {
         <ChatStyleContext.Provider value={settings.chatStyle}>
         <ReactFlow<CanvasNode, BranchEdge>
           nodes={flowNodes}
-          edges={branchEdges}
+          edges={settings.showThreadLines ? branchEdges : NO_EDGES}
           nodeTypes={nodeTypes}
           edgeTypes={edgeTypes}
           onNodesChange={onNodesChange}
@@ -1979,7 +2063,7 @@ function CanvasChatInner() {
         <div
           className="fixed bottom-[110px] right-5 z-[200] flex items-center gap-2
                         px-3.5 py-1.5 rounded-full text-xs font-semibold
-                        bg-surface-overlay border border-accent text-foreground shadow-card"
+                        bg-surface-overlay border border-accent text-foreground"
         >
           <FontAwesomeIcon icon={faLayerGroup} className="text-accent w-3 h-3" />
           {selectedCount} item{selectedCount > 1 ? "s" : ""} selected
@@ -2000,7 +2084,7 @@ function CanvasChatInner() {
           onAnimationEnd={() => setModeToast((toast) => (toast && toast.id === modeToast.id ? null : toast))}
           className="fixed left-1/2 z-[1500] pointer-events-none
                      px-3.5 py-1.5 rounded-full text-xs font-semibold text-white bg-accent
-                     shadow-card animate-mode-toast"
+                     animate-mode-toast"
           style={{ top: TOP_PANEL_CLEARANCE }}
         >
           {modeToast.text}
@@ -2013,7 +2097,7 @@ function CanvasChatInner() {
           key={notice.id}
           role={notice.tone === "error" ? "alert" : "status"}
           className={`fixed left-1/2 -translate-x-1/2 bottom-[120px] z-[1600] flex items-center gap-2 max-w-[560px]
-                      px-4 py-2 rounded-xl text-[13px] font-medium shadow-card animate-node-in border
+                      px-4 py-2 rounded-xl text-[13px] font-medium animate-node-in border
                       ${notice.tone === "error" ? "bg-surface-overlay border-accent text-foreground" : "bg-surface-overlay border-border text-foreground"}`}
         >
           <span className="flex-1">{notice.text}</span>
@@ -2031,7 +2115,7 @@ function CanvasChatInner() {
       {activeNodeId && (
         <div
           className="fixed left-1/2 -translate-x-1/2 z-[200] flex items-center gap-2
-                     px-4 py-1.5 rounded-full text-xs font-semibold text-white bg-accent shadow-card"
+                     px-4 py-1.5 rounded-full text-xs font-semibold text-white bg-accent"
           style={{ top: TOP_PANEL_CLEARANCE }}
         >
           <FontAwesomeIcon icon={faCodeBranch} className="opacity-80 w-3 h-3" />
@@ -2068,19 +2152,12 @@ function CanvasChatInner() {
         </div>
       )}
 
-      <Joystick
-        onPan={(deltaX, deltaY) => {
-          const current = getViewport();
-          setViewport({ x: current.x + deltaX, y: current.y + deltaY, zoom: current.zoom });
-        }}
-        onStart={() => {}}
-        leftOffset={sidebarWidth}
-      />
-
       <ChatInput
         activeNodeId={activeNodeId}
         activeNodePrompt={activeNodePrompt}
-        onSubmit={(prompt) => void addConversationNode(prompt)}
+        draft={chatDraft}
+        onDraftChange={setChatDraft}
+        onSubmit={submitChatDraft}
         onClearActive={() => setActiveNodeId(null)}
         chatStyle={settings.chatStyle}
         responseStyle={settings.responseStyle}
@@ -2097,85 +2174,20 @@ function CanvasChatInner() {
       />
       <ShortcutsDialog isOpen={isShortcutsOpen} onClose={() => setIsShortcutsOpen(false)} />
 
-      {/* ── Full-content modal ─────────────────────────────────── */}
-      {modal && (
-        <div
-          className="fixed inset-0 z-[2000] flex items-center justify-center p-8"
-          style={{
-            background: "rgba(0,0,0,0.65)",
-            backdropFilter: "blur(4px)",
-          }}
-          onClick={() => setModal(null)}
-        >
-          <div
-            role="dialog"
-            aria-modal="true"
-            aria-label="Full conversation"
-            className="bg-surface-overlay border border-border rounded-2xl shadow-card-active
-                       w-full max-w-2xl max-h-[80vh] flex flex-col font-sans"
-            onClick={(event) => event.stopPropagation()}
-          >
-            <div className="flex items-center justify-between px-6 py-4 border-b border-border shrink-0">
-              <span className="text-sm font-semibold text-foreground tracking-tight">
-                Full conversation
-              </span>
-              <button
-                onClick={() => setModal(null)}
-                aria-label="Close"
-                className="text-foreground-muted hover:text-foreground
-                           bg-transparent border-none cursor-pointer transition-colors"
-              >
-                <FontAwesomeIcon icon={faXmark} className="w-3.5 h-3.5" />
-              </button>
-            </div>
+      <ConversationModal
+        conversation={modalConversation?.data ?? null}
+        parentPrompt={modalParentPrompt}
+        activity={modalNodeId ? (activityByNodeId.get(modalNodeId) ?? null) : null}
+        chatStyle={settings.chatStyle}
+        onClose={() => setModalNodeId(null)}
+      />
 
-            <div className="cc-scroll overflow-y-auto flex-1 px-6 py-5 flex flex-col gap-5">
-              {modal.parentPrompt && (
-                <div
-                  className="inline-flex items-center gap-1.5 text-xs text-foreground-muted
-                                bg-surface-subtle border border-border rounded-full px-3 py-1 self-start"
-                >
-                  <FontAwesomeIcon icon={faCodeBranch} className="text-accent w-2.5 h-2.5" />
-                  Branched from: &ldquo;{modal.parentPrompt.slice(0, 80)}
-                  {modal.parentPrompt.length > 80 ? "…" : ""}&rdquo;
-                </div>
-              )}
-
-              <div>
-                <p className="text-[10px] font-bold uppercase tracking-widest text-foreground-muted mb-2">
-                  You
-                </p>
-                <p className="text-sm text-foreground leading-relaxed whitespace-pre-wrap">
-                  {modal.prompt}
-                </p>
-              </div>
-
-              <div className="h-px bg-border-subtle" />
-
-              <div>
-                <div className="flex items-center justify-between mb-2">
-                  <p className="text-[10px] font-bold uppercase tracking-widest text-accent m-0">
-                    AI
-                  </p>
-                  {modal.response && (
-                    <CopyButton text={modal.response} className="text-foreground-muted hover:text-foreground" />
-                  )}
-                </div>
-                {modal.response ? (
-                  <MarkdownContent
-                    content={modal.response}
-                    className="text-sm text-foreground-muted leading-relaxed"
-                  />
-                ) : (
-                  <p className="text-sm text-foreground-muted italic">
-                    Still generating…
-                  </p>
-                )}
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
+      <FileAccessModal
+        isOpen={pendingFileAccessPrompt !== null}
+        folder={projects.currentProject?.workingFolder ?? ""}
+        onChoose={resolveFileAccessPrompt}
+        onClose={() => setPendingFileAccessPrompt(null)}
+      />
     </div>
   );
 }

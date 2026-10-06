@@ -11,7 +11,8 @@ export type StrokeStyle = 'solid' | 'dashed' | 'dotted';
 export type FillStyle = 'hachure' | 'cross-hatch' | 'solid';
 export type Sloppiness = 'clean' | 'sketchy';
 export type FontWeight = 'normal' | 'bold';
-export type FontFamily = 'hand' | 'sans' | 'mono';
+// 'hand' is the original sketchy handwriting; 'casual' a clearer hand-drawn face.
+export type FontFamily = 'casual' | 'hand' | 'sans' | 'serif' | 'mono';
 export type LineKind = 'line' | 'arrow';
 
 export interface Point {
@@ -72,6 +73,10 @@ export type TextStyle = Pick<
 // reusing that name would silently collide with it.
 export type ResponseStyle = 'concise' | 'detailed';
 
+// What Claude may do in a project's working folder. 'ask' = the user hasn't
+// been asked yet; the first chat in the project prompts for it.
+export type FileAccess = 'ask' | 'readWrite' | 'readOnly' | 'none';
+
 export interface ConversationNodeData {
   [key: string]: unknown;
   prompt: string;
@@ -83,7 +88,12 @@ export interface ConversationNodeData {
   color: string;
   branchParentId: string | null;
   width: number;
+  // Used only once the user has resized the card by hand; until then the
+  // card grows with its content (up to a cap) as the reply streams in.
   height: number;
+  isHeightPinned: boolean;
+  // Meaningful on a thread's root card: the whole thread shows as a deck.
+  isThreadStacked: boolean;
 }
 
 // Height is intrinsic (the text wraps at `width` and grows downward), so
@@ -147,20 +157,24 @@ export type ResizeHandleKind = 'corner' | 'edge';
 // they can never go stale, since they're rebuilt from current component
 // state (activeNodeId, etc.) on every pass instead of being captured once
 // at node-creation time. ──
-// Set when this card is the visible top of a stacked thread.
-export interface DeckSummary {
+// Present when the card belongs to a thread of 2+ cards.
+export interface ThreadSummary {
   cardCount: number;
+  isStacked: boolean;
+  // When stacked and this card is on top: its 0-based place in the thread.
+  deckIndex: number | null;
 }
 
 export interface HydratedConversationNodeData extends ConversationNodeData {
   branchParentPromptPreview: string | undefined;
   isBranchActive: boolean;
   isBindingTarget: boolean;
-  deck: DeckSummary | null;
-  // Stacking is on but this card's thread has been fanned out.
-  canRestack: boolean;
-  onExpandThread: () => void;
-  onRestackThread: () => void;
+  thread: ThreadSummary | null;
+  // Live tool activity while the reply streams (e.g. "Read"), else null.
+  activity: string | null;
+  onToggleThreadStack: () => void;
+  onThreadColorChange: (color: string) => void;
+  onShowAdjacentInDeck: (direction: -1 | 1) => void;
   onToggleBranch: () => void;
   onFocusNode: () => void;
   onExpandNode: () => void;

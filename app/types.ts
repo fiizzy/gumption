@@ -169,6 +169,9 @@ export interface ThreadSummary {
   isStacked: boolean;
   // When stacked and this card is on top: its 0-based place in the thread.
   deckIndex: number | null;
+  // When on top of a deck: the tallest card in the thread, so flipping
+  // through the deck never changes its height.
+  deckHeight: number | null;
 }
 
 export interface HydratedConversationNodeData extends ConversationNodeData {

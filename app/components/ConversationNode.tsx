@@ -35,9 +35,9 @@ import ThinkingIndicator from "./ThinkingIndicator";
 const HANDLE_STYLE = { opacity: 0, width: 1, height: 1, pointerEvents: "none" as const };
 
 export const CONVERSATION_MIN_WIDTH = 280;
-const CONVERSATION_MIN_HEIGHT = 160;
+export const CONVERSATION_MIN_HEIGHT = 160;
 // A card grows with its reply up to this height, then scrolls inside.
-const AUTO_HEIGHT_MAX = 640;
+export const AUTO_HEIGHT_MAX = 640;
 // Collapsed "peek" strip height.
 const MINIMIZED_PEEK_HEIGHT = 96;
 const TITLE_MAX_LENGTH = 48;
@@ -248,6 +248,9 @@ function ConversationNode({ data, selected }: NodeProps<HydratedConversationNode
   const deckLayerCount = isDeckTop ? Math.min(thread.cardCount - 1, MAX_VISIBLE_DECK_LAYERS) : 0;
   const cardFrameClass = cn("rounded-xl border", isHighlighted ? palette.activeBorderClass : palette.borderClass);
   const isAutoHeight = !isHeightPinned && !minimized;
+  // A deck holds the height of its tallest card, so shorter cards fill the
+  // same frame instead of making the deck jump as you flip through it.
+  const deckMinHeight = isDeckTop && !minimized ? thread.deckHeight : null;
 
   return (
     <div
@@ -256,7 +259,7 @@ function ConversationNode({ data, selected }: NodeProps<HydratedConversationNode
         // Auto: grows with the content up to a cap. Pinned: the size the user
         // resized it to. Minimized: header + fixed peek strip + footer.
         height: minimized || isAutoHeight ? undefined : height,
-        minHeight: minimized ? undefined : CONVERSATION_MIN_HEIGHT,
+        minHeight: minimized ? undefined : (deckMinHeight ?? CONVERSATION_MIN_HEIGHT),
         maxHeight: isAutoHeight ? AUTO_HEIGHT_MAX : undefined,
         background: palette.surface,
       }}
@@ -370,7 +373,7 @@ function ConversationNode({ data, selected }: NodeProps<HydratedConversationNode
           pinned); collapses to a fixed peek strip with a fade-out gradient ── */}
       <div
         className="relative overflow-hidden nodrag flex flex-col"
-        style={minimized ? { height: MINIMIZED_PEEK_HEIGHT } : { flex: isAutoHeight ? "0 1 auto" : "1 1 auto", minHeight: 0 }}
+        style={minimized ? { height: MINIMIZED_PEEK_HEIGHT } : { flex: isAutoHeight && deckMinHeight === null ? "0 1 auto" : "1 1 auto", minHeight: 0 }}
       >
         <div
           ref={scrollRef}

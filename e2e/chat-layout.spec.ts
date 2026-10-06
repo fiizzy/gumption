@@ -112,6 +112,42 @@ test.describe("chat styles and layout", () => {
     await expect(cards(page)).toHaveCount(6);
   });
 
+  test("a deck keeps a steady height while flipping between short and long cards", async ({ canvas: page }) => {
+    const setReply = (reply: string) =>
+      page.evaluate((text) => ((window as unknown as { __AI_RESULT: string }).__AI_RESULT = text), reply);
+    const send = async (prompt: string) => {
+      const input = page.getByPlaceholder(/conversation|thread/);
+      await input.fill(prompt);
+      await input.press("Enter");
+      await expect(cards(page).filter({ hasText: prompt }).getByRole("status")).toHaveCount(0);
+    };
+    await setReply("Short.");
+    await send("Short question");
+    await setReply(Array.from({ length: 12 }, (_, index) => `Line ${index + 1} of a longer answer.`).join("\n\n"));
+    await send("Long question");
+    await setReply("Also short.");
+    await send("Another short question");
+    await fitView(page);
+
+    const shortCard = cards(page).filter({ hasText: "you@canvas:~$ Short question" });
+    const menu = await openThreadMenu(page, shortCard);
+    await menu.getByRole("switch", { name: "Stack thread" }).click();
+    await page.mouse.click(1500, 900);
+    await fitView(page);
+
+    const deck = () => cards(page).first();
+    const heights: number[] = [];
+    heights.push(Math.round((await deck().boundingBox())!.height));
+    for (const direction of ["Previous", "Previous", "Next", "Next"]) {
+      await deck().hover();
+      await deck().getByRole("button", { name: `${direction} card in thread` }).click();
+      await page.waitForTimeout(150);
+      heights.push(Math.round((await deck().boundingBox())!.height));
+    }
+    expect(new Set(heights).size, `deck heights while flipping: ${heights}`).toBe(1);
+    expect(heights[0]).toBeGreaterThan(300);
+  });
+
   test("dragging a deck moves its whole thread; select-all never touches hidden cards", async ({ canvas: page }) => {
     await buildThreads(page);
     await expectSavedNodes(page, (nodes) => nodes.length === 6, "threads saved");

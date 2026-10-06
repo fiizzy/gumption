@@ -18,7 +18,7 @@ import {
 import "@xyflow/react/dist/style.css";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { faCodeBranch, faLayerGroup, faXmark } from "@fortawesome/free-solid-svg-icons";
-import ConversationNodeComponent from "./ConversationNode";
+import ConversationNodeComponent, { AUTO_HEIGHT_MAX, CONVERSATION_MIN_HEIGHT } from "./ConversationNode";
 import ShapeElementComponent from "./ShapeElement";
 import TextElementComponent from "./TextElement";
 import LineElementComponent from "./LineElement";
@@ -1708,6 +1708,26 @@ function CanvasChatInner() {
     return byMember;
   }, [nodes]);
 
+  // Each deck's steady height: its tallest card as last measured (cards keep
+  // their measurement while hidden in the deck), within the auto-height range.
+  const deckHeightByTopId = useMemo(() => {
+    const heightById = new Map(
+      nodes.flatMap((node) =>
+        node.type === "conversation" && node.measured?.height && !node.data.minimized
+          ? [[node.id, node.measured.height] as const]
+          : [],
+      ),
+    );
+    return new Map(
+      decks.flatMap((deck) => {
+        const heights = deck.memberIds.flatMap((memberId) => (heightById.has(memberId) ? [heightById.get(memberId)!] : []));
+        if (heights.length === 0) return [];
+        const tallest = Math.min(AUTO_HEIGHT_MAX, Math.max(CONVERSATION_MIN_HEIGHT, ...heights));
+        return [[deck.topId, Math.round(tallest)] as const];
+      }),
+    );
+  }, [nodes, decks]);
+
   const hydrationCacheRef = useRef(new Map<string, { source: CanvasNode; flags: string; hydrated: HydratedCanvasNode }>());
 
   const flowNodes = useMemo<HydratedCanvasNode[]>(() => {
@@ -1744,6 +1764,7 @@ function CanvasChatInner() {
                       cardCount: thread.memberIds.length,
                       isStacked: stackedRootIds.has(thread.rootId),
                       deckIndex: deck ? deck.topIndex : null,
+                      deckHeight: deck ? (deckHeightByTopId.get(id) ?? null) : null,
                     }
                   : null,
               activity: activityByNodeId.get(id) ?? null,
@@ -1856,6 +1877,7 @@ function CanvasChatInner() {
           activeNodeId === node.id,
           node.data.branchParentId ? promptById.get(node.data.branchParentId) : "",
           stackedView.deckByTopId.get(node.id)?.topIndex ?? -1,
+          deckHeightByTopId.get(node.id) ?? 0,
           !!thread && stackedRootIds.has(thread.rootId),
           thread?.memberIds.length ?? 0,
           activityByNodeId.get(node.id) ?? "",
@@ -1878,6 +1900,7 @@ function CanvasChatInner() {
     activeNodeId,
     stackedRootIds,
     activityByNodeId,
+    deckHeightByTopId,
   ]);
 
   const modalConversation = modalNodeId

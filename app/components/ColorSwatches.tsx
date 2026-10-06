@@ -13,6 +13,8 @@ const PICKER_FALLBACK_COLOR = "#808080";
 interface Swatch {
   label: string;
   value: string;
+  // Color shown in the swatch when `value` isn't itself a color (e.g. a theme name).
+  preview?: string;
 }
 
 interface Props {
@@ -27,7 +29,7 @@ export default function ColorSwatches({ color, onChange, swatches = SWATCHES, al
   const isCustomColor = !swatches.some((swatch) => swatch.value === color);
   return (
     <div className={cn("flex gap-1.5 flex-wrap items-center text-foreground", className)}>
-      {swatches.map(({ label, value }) => (
+      {swatches.map(({ label, value, preview }) => (
         <button
           key={value}
           title={label}
@@ -40,7 +42,7 @@ export default function ColorSwatches({ color, onChange, swatches = SWATCHES, al
             outlineOffset: color === value ? "2px" : "0",
           }}
         >
-          <span className="absolute inset-0 rounded-full" style={{ background: value }} />
+          <span className="absolute inset-0 rounded-full" style={{ background: preview ?? value }} />
           {value === TRANSPARENT_COLOR && (
             <FontAwesomeIcon icon={faSlash} className="relative w-2.5 h-2.5 text-foreground-muted" />
           )}

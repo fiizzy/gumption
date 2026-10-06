@@ -16,7 +16,8 @@ import {
   faLayerGroup,
   faTerminal,
 } from "@fortawesome/free-solid-svg-icons";
-import type { HydratedConversationNode, ResponseStyle, ThreadSummary } from "../types";
+import type { HydratedConversationNode, ResponseStyle, TerminalTheme, ThreadSummary } from "../types";
+import { TERMINAL_THEMES, getTerminalThemeClass } from "../lib/terminalThemes";
 import { cn } from "../lib/cn";
 import { DEFAULT_COLOR, SWATCHES, isLightColor } from "../lib/color";
 import { ChatStyleContext } from "../lib/chatStyleContext";
@@ -44,7 +45,6 @@ const BRANCH_PREVIEW_MAX_LENGTH = 42;
 // Each card behind a deck's top card is shifted this far up-and-right.
 const DECK_LAYER_OFFSET = 7;
 const DECK_LAYER_OPACITY_STEP = 0.18;
-const TERMINAL_TINT_STRIP_WIDTH = 3;
 // While streaming, keep following the newest text unless the user has
 // scrolled further up than this.
 const FOLLOW_SCROLL_THRESHOLD = 48;
@@ -222,13 +222,15 @@ function ConversationNode({ data, selected }: NodeProps<HydratedConversationNode
     onResizeElement,
     onToggleThreadStack,
     onThreadColorChange,
+    onTerminalThemeChange,
+    onThreadTerminalThemeChange,
+    terminalTheme,
     onShowAdjacentInDeck,
   } = data;
 
   const [showColors, setShowColors] = useState(false);
   const isTerminal = useContext(ChatStyleContext) === "terminal";
   const palette = isTerminal ? TERMINAL_PALETTE : getStandardPalette(color);
-  const hasTint = color !== DEFAULT_COLOR;
   const isDeckTop = !!thread?.isStacked && thread.deckIndex !== null;
 
   // Follow the reply as it streams in, unless the user scrolled up to read.
@@ -261,6 +263,7 @@ function ConversationNode({ data, selected }: NodeProps<HydratedConversationNode
       className={cn(
         "animate-node-in cursor-pointer group flex flex-col relative transition-[border-color] duration-200",
         palette.fontClass,
+        isTerminal && getTerminalThemeClass(terminalTheme),
         cardFrameClass,
         isBindingTarget && "outline-4 outline-solid outline-accent/50",
       )}
@@ -304,11 +307,19 @@ function ConversationNode({ data, selected }: NodeProps<HydratedConversationNode
       {thread && (
         <ThreadMenu
           thread={thread}
-          color={color}
+          colorPicker={
+            isTerminal
+              ? {
+                  label: "Terminal theme",
+                  value: terminalTheme,
+                  swatches: TERMINAL_THEMES,
+                  onChange: (value) => onThreadTerminalThemeChange(value as TerminalTheme),
+                }
+              : { label: "Thread color", value: color, swatches: SWATCHES, onChange: onThreadColorChange }
+          }
           isTerminal={isTerminal}
           isAlwaysVisible={selected}
           onToggleStack={onToggleThreadStack}
-          onColorChange={onThreadColorChange}
         />
       )}
 
@@ -330,14 +341,7 @@ function ConversationNode({ data, selected }: NodeProps<HydratedConversationNode
           "drag-handle shrink-0 flex items-center gap-2 px-3 py-2.5 cursor-grab active:cursor-grabbing rounded-t-xl",
           !minimized && cn("border-b", palette.dividerClass),
         )}
-        style={
-          isTerminal
-            ? {
-                background: "var(--color-terminal-chrome)",
-                boxShadow: hasTint ? `inset ${TERMINAL_TINT_STRIP_WIDTH}px 0 0 ${color}` : undefined,
-              }
-            : undefined
-        }
+        style={isTerminal ? { background: "var(--color-terminal-chrome)" } : undefined}
       >
         <FontAwesomeIcon
           icon={isTerminal ? faTerminal : faGripVertical}
@@ -407,8 +411,11 @@ function ConversationNode({ data, selected }: NodeProps<HydratedConversationNode
             {isBranchActive ? "Branching…" : "Branch"}
           </CardButton>
           <CardButton isTerminal={isTerminal} onClick={() => setShowColors((shown) => !shown)}>
-            <span className="inline-block w-2.5 h-2.5 rounded-full shrink-0 border border-black/15" style={{ background: color }} />
-            Color
+            <span
+              className="inline-block w-2.5 h-2.5 rounded-full shrink-0 border border-black/15"
+              style={{ background: isTerminal ? "var(--color-terminal-text)" : color }}
+            />
+            {isTerminal ? "Theme" : "Color"}
           </CardButton>
           {isDeckTop && (
             <span className={cn("ml-auto text-[11px] tabular-nums", palette.mutedClass)}>
@@ -418,9 +425,11 @@ function ConversationNode({ data, selected }: NodeProps<HydratedConversationNode
         </div>
         {showColors && (
           <ColorSwatches
-            color={color}
+            color={isTerminal ? terminalTheme : color}
+            swatches={isTerminal ? TERMINAL_THEMES : SWATCHES}
             onChange={(value) => {
-              onColorChange(value);
+              if (isTerminal) onTerminalThemeChange(value as TerminalTheme);
+              else onColorChange(value);
               setShowColors(false);
             }}
             className="mt-2"
@@ -479,20 +488,26 @@ function DeckArrow({
 
 // Per-thread settings: shown on hover (or while the card is selected) for
 // any card that belongs to a thread.
+interface ColorPicker {
+  label: string;
+  value: string;
+  swatches: { label: string; value: string; preview?: string }[];
+  onChange: (value: string) => void;
+}
+
 function ThreadMenu({
   thread,
-  color,
+  colorPicker,
   isTerminal,
   isAlwaysVisible,
   onToggleStack,
-  onColorChange,
 }: {
   thread: ThreadSummary;
-  color: string;
+  // Card tints in the standard style; terminal themes in the terminal style.
+  colorPicker: ColorPicker;
   isTerminal: boolean;
   isAlwaysVisible: boolean;
   onToggleStack: () => void;
-  onColorChange: (color: string) => void;
 }) {
   const [isOpen, setIsOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -563,9 +578,9 @@ function ThreadMenu({
           </div>
           <div className="flex flex-col gap-1.5">
             <span className={cn("text-[12.5px] font-medium", isTerminal ? "text-terminal-bright" : "text-foreground")}>
-              Thread color
+              {colorPicker.label}
             </span>
-            <ColorSwatches color={color} swatches={SWATCHES} onChange={onColorChange} />
+            <ColorSwatches color={colorPicker.value} swatches={colorPicker.swatches} onChange={colorPicker.onChange} />
           </div>
         </div>
       )}

@@ -5,6 +5,8 @@ import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import { faCodeBranch, faXmark, faPaperPlane } from '@fortawesome/free-solid-svg-icons';
 import type { ChatStyle, ResponseStyle } from '../lib/useSettings';
 import { cn } from '../lib/cn';
+import { getTerminalThemeClass } from '../lib/terminalThemes';
+import type { TerminalTheme } from '../types';
 import Dropdown, { type DropdownOption } from './Dropdown';
 
 const BRANCH_PREVIEW_MAX_LENGTH = 52;
@@ -24,6 +26,8 @@ interface Props {
   onSubmit: () => void;
   onClearActive: () => void;
   chatStyle: ChatStyle;
+  // Terminal colors of the thread last chatted in (see CanvasChat).
+  terminalTheme: TerminalTheme;
   responseStyle: ResponseStyle;
   onResponseStyleChange: (responseStyle: ResponseStyle) => void;
 }
@@ -36,6 +40,7 @@ export default function ChatInput({
   onSubmit,
   onClearActive,
   chatStyle,
+  terminalTheme,
   responseStyle,
   onResponseStyleChange,
 }: Props) {
@@ -48,7 +53,12 @@ export default function ChatInput({
   }, [activeNodeId]);
 
   return (
-    <div className={cn('fixed bottom-6 left-1/2 -translate-x-1/2 z-[200] w-[640px] max-w-[calc(100vw-32px)]', isTerminal ? 'font-mono' : 'font-sans')}>
+    <div
+      className={cn(
+        'fixed bottom-6 left-1/2 -translate-x-1/2 z-[200] w-[640px] max-w-[calc(100vw-32px)]',
+        isTerminal ? cn('font-mono', getTerminalThemeClass(terminalTheme)) : 'font-sans',
+      )}
+    >
       {/* Branch context banner — slides down when active */}
       <div style={{ display: 'grid', gridTemplateRows: activeNodeId ? '1fr' : '0fr', transition: 'grid-template-rows 0.22s cubic-bezier(0.4,0,0.2,1)' }}>
         <div className="overflow-hidden">

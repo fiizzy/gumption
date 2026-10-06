@@ -209,6 +209,34 @@
   font-weight: 700;
 }
 
+/* ── Terminal themes — each thread picks one; they re-point the terminal
+   tokens above, so everything drawn with them (text, borders, chrome,
+   spinner, code blocks) follows. Green is the @theme default. ── */
+.cc-terminal-theme-red {
+  --color-terminal-surface: #120a0a;
+  --color-terminal-chrome: #1c1010;
+  --color-terminal-border: #3d1e1e;
+  --color-terminal-text: #f87171;
+  --color-terminal-dim: #b55252;
+  --color-terminal-bright: #fecaca;
+}
+.cc-terminal-theme-blue {
+  --color-terminal-surface: #090d14;
+  --color-terminal-chrome: #0f1622;
+  --color-terminal-border: #1c2c42;
+  --color-terminal-text: #60a5fa;
+  --color-terminal-dim: #4170a8;
+  --color-terminal-bright: #bfdbfe;
+}
+.cc-terminal-theme-mono {
+  --color-terminal-surface: #0b0b0b;
+  --color-terminal-chrome: #161616;
+  --color-terminal-border: #2f2f2f;
+  --color-terminal-text: #e4e4e4;
+  --color-terminal-dim: #8c8c8c;
+  --color-terminal-bright: #ffffff;
+}
+
 /* ── Terminal chat style: markdown inside replies ── */
 .cc-terminal-markdown pre,
 .cc-terminal-markdown code,

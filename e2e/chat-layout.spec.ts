@@ -83,7 +83,7 @@ test.describe("chat styles and layout", () => {
     await expect(modal).toContainText("you@canvas:~$ Show me in full");
   });
 
-  test("per-thread stacking with deck arrows and thread color", async ({ canvas: page }) => {
+  test("per-thread stacking with deck arrows and thread theme", async ({ canvas: page }) => {
     await buildThreads(page);
     await fitView(page);
     const menu = await openThreadMenu(page, card(page, "Thread A second"));
@@ -102,11 +102,11 @@ test.describe("chat styles and layout", () => {
     await expect(card(page, "Thread A third")).toContainText("3 / 3");
 
     const deckMenu = await openThreadMenu(page, card(page, "Thread A third"));
-    await deckMenu.getByRole("button", { name: "Green" }).click();
+    await deckMenu.getByRole("button", { name: "Blue" }).click();
     await expectSavedNodes(
       page,
-      (nodes) => nodes.filter((node) => String(node.data.prompt ?? "").startsWith("Thread A")).every((node) => node.data.color === "#86efac"),
-      "thread color applied to every card in the thread",
+      (nodes) => nodes.filter((node) => String(node.data.prompt ?? "").startsWith("Thread A")).every((node) => node.data.terminalTheme === "blue"),
+      "thread theme applied to every card in the thread, hidden ones included",
     );
     await deckMenu.getByRole("switch", { name: "Stack thread" }).click();
     await expect(cards(page)).toHaveCount(6);
@@ -167,6 +167,36 @@ test.describe("chat styles and layout", () => {
     await expect(cards(page)).toHaveCount(5);
     await page.keyboard.press("Control+z");
     await expect(cards(page)).toHaveCount(6);
+  });
+
+  test("thread color sets the terminal theme; the chat input follows the last chatted thread", async ({ canvas: page }) => {
+    const cardText = (target: Locator) => target.locator(".drag-handle span").first();
+    await sendPrompt(page, "Theme first");
+    await sendPrompt(page, "Theme second");
+    await fitView(page);
+    // Default theme: green.
+    await expect(cardText(card(page, "Theme first"))).toHaveCSS("color", "rgb(74, 222, 128)");
+
+    const menu = await openThreadMenu(page, card(page, "Theme first"));
+    await expect(menu).toContainText("Terminal theme");
+    await menu.getByRole("button", { name: "Red" }).click();
+    await page.keyboard.press("Escape");
+    for (const prompt of ["Theme first", "Theme second"]) {
+      await expect(cardText(card(page, prompt))).toHaveCSS("color", "rgb(248, 113, 113)");
+    }
+    await expectSavedNodes(page, (nodes) => nodes.every((node) => node.data.terminalTheme === "red"), "theme saved on every card");
+
+    // Continuing the thread keeps its theme, and the chat input wears it.
+    // "Theme second" is still the active thread (the last message sent).
+    await expect(page.getByPlaceholder(/thread/)).toHaveCSS("color", "rgb(254, 202, 202)");
+    await sendPrompt(page, "Theme third");
+    await expect(cardText(card(page, "Theme third"))).toHaveCSS("color", "rgb(248, 113, 113)");
+
+    // A single card can switch on its own from its Theme button.
+    await card(page, "Theme third").getByRole("button", { name: "Theme" }).click();
+    await card(page, "Theme third").getByRole("button", { name: "Blue" }).click();
+    await expect(cardText(card(page, "Theme third"))).toHaveCSS("color", "rgb(96, 165, 250)");
+    await expect(cardText(card(page, "Theme first"))).toHaveCSS("color", "rgb(248, 113, 113)");
   });
 
   test("thread lines can be dimmed and hidden", async ({ canvas: page }) => {

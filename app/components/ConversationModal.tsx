@@ -6,6 +6,7 @@ import type { ConversationNodeData } from "../types";
 import type { ChatStyle } from "../lib/useSettings";
 import { DEFAULT_COLOR } from "../lib/color";
 import { cn } from "../lib/cn";
+import { getTerminalThemeClass } from "../lib/terminalThemes";
 import { ConversationTranscript, TERMINAL_PALETTE, getStandardPalette } from "./ConversationNode";
 
 const TITLE_MAX_LENGTH = 72;
@@ -33,7 +34,12 @@ export default function ConversationModal({ conversation, parentPrompt, activity
         role="dialog"
         aria-modal="true"
         aria-label="Full conversation"
-        className={cn("w-full max-w-2xl max-h-[80vh] flex flex-col rounded-xl border", palette.fontClass, palette.borderClass)}
+        className={cn(
+          "w-full max-w-2xl max-h-[80vh] flex flex-col rounded-xl border",
+          palette.fontClass,
+          palette.borderClass,
+          isTerminal && getTerminalThemeClass(conversation.terminalTheme),
+        )}
         style={{ background: palette.surface }}
         onClick={(event) => event.stopPropagation()}
       >

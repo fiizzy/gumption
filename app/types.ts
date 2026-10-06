@@ -73,6 +73,9 @@ export type TextStyle = Pick<
 // reusing that name would silently collide with it.
 export type ResponseStyle = 'concise' | 'detailed';
 
+// The terminal chat style's color scheme, chosen per thread.
+export type TerminalTheme = 'green' | 'red' | 'blue' | 'mono';
+
 // What Claude may do in a project's working folder. 'ask' = the user hasn't
 // been asked yet; the first chat in the project prompts for it.
 export type FileAccess = 'ask' | 'readWrite' | 'readOnly' | 'none';
@@ -85,7 +88,10 @@ export interface ConversationNodeData {
   responseStyle: ResponseStyle;
   loading: boolean;
   minimized: boolean;
+  // Card tint in the standard chat style.
   color: string;
+  // Color scheme in the terminal chat style.
+  terminalTheme: TerminalTheme;
   branchParentId: string | null;
   width: number;
   // Used only once the user has resized the card by hand; until then the
@@ -174,6 +180,8 @@ export interface HydratedConversationNodeData extends ConversationNodeData {
   activity: string | null;
   onToggleThreadStack: () => void;
   onThreadColorChange: (color: string) => void;
+  onTerminalThemeChange: (theme: TerminalTheme) => void;
+  onThreadTerminalThemeChange: (theme: TerminalTheme) => void;
   onShowAdjacentInDeck: (direction: -1 | 1) => void;
   onToggleBranch: () => void;
   onFocusNode: () => void;

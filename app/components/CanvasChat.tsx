@@ -69,6 +69,7 @@ import {
 import { useCanvasHistory } from "../lib/useCanvasHistory";
 import { useSettings } from "../lib/useSettings";
 import { ChatStyleContext } from "../lib/chatStyleContext";
+import { DEFAULT_TERMINAL_THEME } from "../lib/terminalThemes";
 import {
   applyThreadStacking,
   arrangeChatsInGrid,
@@ -98,6 +99,7 @@ import type {
   ElementStyle,
   FileAccess,
   Harness,
+  TerminalTheme,
   HydratedCanvasNode,
   ImageElementNode,
   LineElementNode,
@@ -1190,6 +1192,7 @@ function CanvasChatInner() {
           loading: true,
           minimized: false,
           color: branchParentNode?.data.color ?? DEFAULT_COLOR,
+          terminalTheme: branchParentNode?.data.terminalTheme ?? DEFAULT_TERMINAL_THEME,
           branchParentId: branchParentNode?.id ?? null,
           width: branchParentNode?.data.width ?? NODE_W,
           height: branchParentNode?.data.height ?? CONVERSATION_DEFAULT_HEIGHT,
@@ -1664,6 +1667,14 @@ function CanvasChatInner() {
       updateNodeData<ConversationNodeState>(rootId, "conversation", (current) => ({
         data: { ...current.data, isThreadStacked: !current.data.isThreadStacked },
       })),
+    setThreadTerminalTheme: (memberIds: string[], terminalTheme: TerminalTheme) => {
+      const members = new Set(memberIds);
+      setNodes((previous) =>
+        previous.map((node) =>
+          members.has(node.id) && node.type === "conversation" ? { ...node, data: { ...node.data, terminalTheme } } : node,
+        ),
+      );
+    },
     colorThread: (memberIds: string[], color: string) => {
       const members = new Set(memberIds);
       setNodes((previous) =>
@@ -1755,6 +1766,13 @@ function CanvasChatInner() {
                 })),
               onToggleThreadStack: () => thread && actions.current.toggleThreadStack(thread.rootId),
               onThreadColorChange: (color: string) => thread && actions.current.colorThread(thread.memberIds, color),
+              onTerminalThemeChange: (terminalTheme: TerminalTheme) =>
+                actions.current.updateNodeData<ConversationNodeState>(id, "conversation", (current) => ({
+                  data: { ...current.data, terminalTheme },
+                })),
+              // A card outside any thread is its own thread for theming.
+              onThreadTerminalThemeChange: (terminalTheme: TerminalTheme) =>
+                actions.current.setThreadTerminalTheme(thread?.memberIds ?? [id], terminalTheme),
               onShowAdjacentInDeck: (direction: -1 | 1) => thread && actions.current.showAdjacentInDeck(thread.rootId, direction),
             },
           };
@@ -1874,6 +1892,10 @@ function CanvasChatInner() {
   const selectedCount = selectedNodes.length;
   const activeNode = activeNodeId ? nodes.find((node) => node.id === activeNodeId) : undefined;
   const activeNodePrompt = activeNode?.type === "conversation" ? activeNode.data.prompt : undefined;
+  const lastChattedNode = activeNode?.type === "conversation"
+    ? activeNode
+    : nodes.findLast((node): node is ConversationNodeState => node.type === "conversation");
+  const chatInputTerminalTheme = lastChattedNode?.data.terminalTheme ?? DEFAULT_TERMINAL_THEME;
 
   // Style panel: the selection's elements, or a prototype of the active
   // drawing tool's element so its style can be chosen before drawing.
@@ -2160,6 +2182,7 @@ function CanvasChatInner() {
         onSubmit={submitChatDraft}
         onClearActive={() => setActiveNodeId(null)}
         chatStyle={settings.chatStyle}
+        terminalTheme={chatInputTerminalTheme}
         responseStyle={settings.responseStyle}
         onResponseStyleChange={(responseStyle) => updateSettings({ responseStyle })}
       />

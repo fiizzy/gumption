@@ -10,6 +10,7 @@ import type {
   Viewport,
 } from "../types";
 import { DEFAULT_COLOR } from "./color";
+import { DEFAULT_TERMINAL_THEME, TERMINAL_THEME_VALUES } from "./terminalThemes";
 import { DEFAULT_ELEMENT_STYLE, MAX_FONT_SIZE, MIN_FONT_SIZE, createSeed } from "./elementStyle";
 
 export const CANVAS_DOCUMENT_TYPE = "canvas-chat";
@@ -143,6 +144,7 @@ function normalizeNode(rawNode: unknown, options: ParseOptions): CanvasNode | nu
           loading: isLoading,
           minimized: data.minimized === true,
           color: readString(data.color, DEFAULT_COLOR),
+          terminalTheme: readEnum(data.terminalTheme, TERMINAL_THEME_VALUES, DEFAULT_TERMINAL_THEME),
           branchParentId: typeof data.branchParentId === "string" ? data.branchParentId : null,
           width: readSize(data.width, CONVERSATION_DEFAULT_WIDTH),
           height: readSize(data.height, CONVERSATION_DEFAULT_HEIGHT),

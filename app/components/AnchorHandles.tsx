@@ -6,35 +6,36 @@ import { cn } from "../lib/cn";
 
 // Side-midpoint-only anchor points (the corners are reserved for resize
 // handles instead — see ResizeHandles — to avoid the two systems fighting
-// over the same 4 spots). Each point is usable as both a connection source
-// and target, so any two anchorable elements can connect from/to any side,
-// in either direction.
+// over the same 4 spots). One handle per side: CanvasChat runs xyflow in
+// loose connection mode, so each handle works as both start and end.
 const ANCHOR_POINTS = [
-  { id: "top", position: Position.Top, top: "0%", left: "50%" },
-  { id: "right", position: Position.Right, top: "50%", left: "100%" },
-  { id: "bottom", position: Position.Bottom, top: "100%", left: "50%" },
-  { id: "left", position: Position.Left, top: "50%", left: "0%" },
+  { side: "top", position: Position.Top, top: "0%", left: "50%" },
+  { side: "right", position: Position.Right, top: "50%", left: "100%" },
+  { side: "bottom", position: Position.Bottom, top: "100%", left: "50%" },
+  { side: "left", position: Position.Left, top: "50%", left: "0%" },
 ] as const;
+
+export const ANCHOR_HANDLE_PREFIX = "anchor-";
 
 const HANDLE_VISUAL_SIZE = 8;
 // Hit area is deliberately much bigger than the visible square — an 8px
-// target is hard to land a drag on, so both the visible source dot and the
-// (fully invisible) target both get a generous click/drop radius around it.
+// target is hard to land a drag on.
 const HANDLE_HIT_SIZE = 22;
-const TARGET_HIT_SIZE = 22;
+// Above ResizeHandles' edge strips (z-index 15/16), which sit at these
+// exact same side-midpoints and would otherwise swallow the drag/drop.
+const HANDLE_Z_INDEX = 20;
 
 interface Props {
-  // Reveal the visible square handles on hover/select, same convention as
-  // every other per-element affordance (color chip, resize handles, ...).
+  // Reveal the visible squares when selected (and on hover otherwise).
   visible: boolean;
 }
 
-// Shared by ConversationNode and CanvasElement — every anchorable node type
-// renders the exact same 4 side points so any of them can connect to any
-// other (chat-node-to-chat-node is rejected separately, in CanvasChat's
-// isValidConnection, not by omitting handles here).
+// Shared by every bindable element type — dragging from one of these to
+// another element's anchor creates an arrow bound at both ends (see
+// CanvasChat's onConnect). Pointer events are forced on because transparent
+// shapes switch their wrapper's pointer events off.
 export default function AnchorHandles({ visible }: Props) {
-  const handleBoxStyle = (top: string, left: string): CSSProperties => ({
+  const handleStyle = (top: string, left: string): CSSProperties => ({
     top,
     left,
     width: HANDLE_HIT_SIZE,
@@ -46,18 +47,19 @@ export default function AnchorHandles({ visible }: Props) {
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
+    pointerEvents: "all",
+    zIndex: HANDLE_Z_INDEX,
   });
 
   return (
     <>
-      {ANCHOR_POINTS.flatMap(({ id, position, top, left }) => [
+      {ANCHOR_POINTS.map(({ side, position, top, left }) => (
         <Handle
-          key={`${id}-source`}
+          key={side}
           type="source"
           position={position}
-          id={`anchor-${id}-source`}
-          className="z-20"
-          style={handleBoxStyle(top, left)}
+          id={`${ANCHOR_HANDLE_PREFIX}${side}`}
+          style={handleStyle(top, left)}
         >
           <div
             className={cn(
@@ -66,30 +68,8 @@ export default function AnchorHandles({ visible }: Props) {
             )}
             style={{ width: HANDLE_VISUAL_SIZE, height: HANDLE_VISUAL_SIZE }}
           />
-        </Handle>,
-        <Handle
-          key={`${id}-target`}
-          type="target"
-          position={position}
-          id={`anchor-${id}-target`}
-          style={{
-            top,
-            left,
-            width: TARGET_HIT_SIZE,
-            height: TARGET_HIT_SIZE,
-            transform: "translate(-50%, -50%)",
-            background: "transparent",
-            border: "none",
-            borderRadius: 0,
-            opacity: 0,
-            // Was missing before — ResizeHandles' edge strips (z-index
-            // 15/16) sit at these exact same side-midpoints and, lacking
-            // this, would paint over the target and silently swallow every
-            // drop, which is why connections often failed to land at all.
-            zIndex: 20,
-          }}
-        />,
-      ])}
+        </Handle>
+      ))}
     </>
   );
 }

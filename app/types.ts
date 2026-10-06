@@ -1,31 +1,75 @@
 import type { Node, Edge } from '@xyflow/react';
 
-export type ShapeKind = 'square' | 'circle' | 'diamond';
+export type ShapeKind = 'rectangle' | 'ellipse' | 'diamond';
 
 // App-level UI state, not per-node data — which coding harness new chat
 // nodes would use. Only 'claude' is actually wired up to app/lib/ai.ts
 // today; 'codex' is a non-functional placeholder for a future harness.
 export type Harness = 'claude' | 'codex';
 
-// Shared styling vocabulary across shapes, lines/arrows, and text.
-export type StrokeStyle = 'solid' | 'dashed';
+export type StrokeStyle = 'solid' | 'dashed' | 'dotted';
+export type FillStyle = 'hachure' | 'cross-hatch' | 'solid';
+export type Sloppiness = 'clean' | 'sketchy';
 export type FontWeight = 'normal' | 'bold';
+export type FontFamily = 'hand' | 'sans' | 'mono';
+export type LineKind = 'line' | 'arrow';
 
 export interface Point {
   x: number;
   y: number;
 }
 
+// Attaches a line/arrow endpoint to another element so it follows that
+// element around. `focus` is the attachment point normalized to the
+// target's bounding box (0..1 on each axis), always lying on its outline,
+// so it stays put proportionally when the target is resized.
+export interface Binding {
+  elementId: string;
+  focus: Point;
+}
+
+// The full set of Excalidraw-style properties. Each element type persists
+// only the subset that applies to it (see the *Style picks below), and the
+// style panel shows a control whenever any selected element has that key.
+export interface ElementStyle {
+  strokeColor: string;
+  backgroundColor: string;
+  fillStyle: FillStyle;
+  strokeWidth: number;
+  strokeStyle: StrokeStyle;
+  sloppiness: Sloppiness;
+  opacity: number;
+  fontSize: number;
+  fontFamily: FontFamily;
+  fontWeight: FontWeight;
+}
+
+export type ShapeStyle = Pick<
+  ElementStyle,
+  | 'strokeColor'
+  | 'backgroundColor'
+  | 'fillStyle'
+  | 'strokeWidth'
+  | 'strokeStyle'
+  | 'sloppiness'
+  | 'opacity'
+  | 'fontSize'
+  | 'fontFamily'
+>;
+export type LineStyle = Pick<
+  ElementStyle,
+  'strokeColor' | 'strokeWidth' | 'strokeStyle' | 'sloppiness' | 'opacity'
+>;
+export type TextStyle = Pick<
+  ElementStyle,
+  'strokeColor' | 'fontSize' | 'fontFamily' | 'fontWeight' | 'opacity'
+>;
+
 // ── Persisted shape — what actually lives in CanvasChat's `nodes` state ──
 //
 // `branchParentId` is deliberately NOT named `parentId` — xyflow reserves
 // `Node.parentId` for its own sub-flow/grouping nesting feature, and
 // reusing that name would silently collide with it.
-//
-// Every conversation node either branches from an earlier one (set) or is
-// a standalone, untethered session (null) — there is no other connection
-// type. See CanvasChat's `addNode` for how the active node is carried
-// forward by default so continuing a thread doesn't require re-selecting it.
 export interface ConversationNodeData {
   [key: string]: unknown;
   prompt: string;
@@ -38,47 +82,60 @@ export interface ConversationNodeData {
   height: number;
 }
 
-export interface TextElementData {
+// Height is intrinsic (the text wraps at `width` and grows downward), so
+// only the width is stored.
+export interface TextElementData extends TextStyle {
   [key: string]: unknown;
   text: string;
-  color: string;
-  autoEdit: boolean;
-  fontWeight: FontWeight;
-  fontSize: number;
   width: number;
-  height: number;
 }
 
-export interface ShapeElementData {
+export interface ShapeElementData extends ShapeStyle {
   [key: string]: unknown;
   shapeKind: ShapeKind;
-  color: string;
   width: number;
   height: number;
-  strokeStyle: StrokeStyle;
+  // Fixed per element so rough.js redraws the same wobble every render.
+  seed: number;
+  label: string;
 }
 
 // A straight line or arrow between two points, stored relative to the
 // node's own bounding box (top-left = position) so dragging the whole
 // node moves both endpoints together, same as any other xyflow node.
-export interface LineElementData {
+export interface LineElementData extends LineStyle {
   [key: string]: unknown;
-  kind: 'line' | 'arrow';
+  kind: LineKind;
   points: [Point, Point];
-  color: string;
-  strokeStyle: StrokeStyle;
+  seed: number;
+  startBinding: Binding | null;
+  endBinding: Binding | null;
+}
+
+export interface ImageElementData {
+  [key: string]: unknown;
+  src: string;
+  width: number;
+  height: number;
+  opacity: number;
 }
 
 export type ConversationNode = Node<ConversationNodeData, 'conversation'>;
 export type TextElementNode = Node<TextElementData, 'textElement'>;
 export type ShapeElementNode = Node<ShapeElementData, 'shapeElement'>;
 export type LineElementNode = Node<LineElementData, 'lineElement'>;
+export type ImageElementNode = Node<ImageElementData, 'imageElement'>;
 
 export type CanvasNode =
   | ConversationNode
   | TextElementNode
   | ShapeElementNode
-  | LineElementNode;
+  | LineElementNode
+  | ImageElementNode;
+
+export type CanvasNodeType = CanvasNode['type'];
+
+export type ResizeHandleKind = 'corner' | 'edge';
 
 // ── Hydrated shape — the persisted data plus per-render derived values and
 // interaction callbacks, assembled fresh every render in CanvasChat and
@@ -89,6 +146,7 @@ export type CanvasNode =
 export interface HydratedConversationNodeData extends ConversationNodeData {
   branchParentPromptPreview: string | undefined;
   isBranchActive: boolean;
+  isBindingTarget: boolean;
   onToggleBranch: () => void;
   onFocusNode: () => void;
   onExpandNode: () => void;
@@ -98,52 +156,59 @@ export interface HydratedConversationNodeData extends ConversationNodeData {
 }
 
 export interface HydratedTextElementData extends TextElementData {
+  isEditing: boolean;
+  isBindingTarget: boolean;
   onTextChange: (text: string) => void;
-  onColorChange: (color: string) => void;
-  onDeleteElement: () => void;
+  onStopEditing: () => void;
   // The corner handles scale fontSize proportionally along with the box
   // (dragging a corner is "make the text bigger/smaller"); the edge
-  // handles only change width/height, rewrapping at the same font size —
-  // hence needing to know which kind of handle triggered the resize.
-  onResizeElement: (width: number, height: number, x: number, y: number, handleKind: "corner" | "edge") => void;
+  // handles only change the width, rewrapping at the same font size.
+  onResizeElement: (width: number, x: number, y: number, handleKind: ResizeHandleKind) => void;
 }
 
 export interface HydratedShapeElementData extends ShapeElementData {
-  onColorChange: (color: string) => void;
-  onDeleteElement: () => void;
+  isEditing: boolean;
+  isBindingTarget: boolean;
+  onLabelChange: (label: string) => void;
+  onStopEditing: () => void;
   onResizeElement: (width: number, height: number, x: number, y: number) => void;
 }
 
 export interface HydratedLineElementData extends LineElementData {
-  onColorChange: (color: string) => void;
-  onDeleteElement: () => void;
-  onPointsChange: (points: [Point, Point], position: Point) => void;
-  // Given a flow-space point, returns it snapped to the nearest chat-node/
-  // shape/text anchor within range, or the point unchanged if none is close.
-  onSnapPoint: (point: Point) => Point;
+  // Reports a flow-space pointer position while an endpoint handle is
+  // dragged; CanvasChat owns snapping/binding and the resulting geometry.
+  onEndpointDrag: (endpointIndex: 0 | 1, flowPoint: Point) => void;
+  onEndpointDragEnd: () => void;
+}
+
+export interface HydratedImageElementData extends ImageElementData {
+  isBindingTarget: boolean;
+  onResizeElement: (width: number, height: number, x: number, y: number) => void;
 }
 
 export type HydratedConversationNode = Node<HydratedConversationNodeData, 'conversation'>;
 export type HydratedTextElementNode = Node<HydratedTextElementData, 'textElement'>;
 export type HydratedShapeElementNode = Node<HydratedShapeElementData, 'shapeElement'>;
 export type HydratedLineElementNode = Node<HydratedLineElementData, 'lineElement'>;
+export type HydratedImageElementNode = Node<HydratedImageElementData, 'imageElement'>;
 
 export type HydratedCanvasNode =
   | HydratedConversationNode
   | HydratedTextElementNode
   | HydratedShapeElementNode
-  | HydratedLineElementNode;
+  | HydratedLineElementNode
+  | HydratedImageElementNode;
 
 export interface CanvasEdgeData {
   [key: string]: unknown;
 }
 
+// Derived purely from each conversation node's branchParentId — never
+// user-created or persisted on its own.
 export type BranchEdge = Edge<CanvasEdgeData, 'branch'>;
 
-// A user-drawn connector from a chat node's anchor handle to a shape or
-// text element — entirely separate from BranchEdge: it's real, persisted
-// edge state (not derived from branchParentId), and unlike branch edges it
-// can be created, reconnected, and deleted by the user.
-export type AnchorEdge = Edge<CanvasEdgeData, 'anchor'>;
-
-export type CanvasEdge = BranchEdge | AnchorEdge;
+export interface Viewport {
+  x: number;
+  y: number;
+  zoom: number;
+}

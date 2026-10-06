@@ -1,121 +1,363 @@
 "use client";
 
-import { useState } from "react";
+import type { ReactNode } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
-import { faBold, faGripLines, faAnglesUp, faAnglesDown } from "@fortawesome/free-solid-svg-icons";
+import {
+  faAnglesUp,
+  faAnglesDown,
+  faAngleUp,
+  faAngleDown,
+  faBold,
+  faCopy,
+  faTrashCan,
+  faBarsStaggered,
+  faHashtag,
+  faSquare,
+  faRulerHorizontal,
+  faSignature,
+  faFeatherPointed,
+  faFont,
+  faCode,
+} from "@fortawesome/free-solid-svg-icons";
+import type { IconDefinition } from "@fortawesome/fontawesome-svg-core";
+import type { ElementStyle, FillStyle, FontFamily, Sloppiness, StrokeStyle } from "../types";
 import ColorSwatches from "./ColorSwatches";
-import type { CanvasNode, FontWeight, StrokeStyle } from "../types";
+import { BACKGROUND_SWATCHES, STROKE_SWATCHES, TRANSPARENT_COLOR } from "../lib/color";
+import { FONT_SIZE_OPTIONS, STROKE_WIDTH_OPTIONS } from "../lib/elementStyle";
 import { cn } from "../lib/cn";
 
-interface Props {
-  selection: CanvasNode[];
-  onColorChange: (color: string) => void;
-  onFontWeightChange: (fontWeight: FontWeight) => void;
-  onStrokeStyleChange: (strokeStyle: StrokeStyle) => void;
-  onBringToFront: () => void;
-  onSendToBack: () => void;
+const STROKE_STYLE_OPTIONS: { value: StrokeStyle; label: string }[] = [
+  { value: "solid", label: "Solid" },
+  { value: "dashed", label: "Dashed" },
+  { value: "dotted", label: "Dotted" },
+];
+
+const FILL_STYLE_OPTIONS: { value: FillStyle; label: string; icon: IconDefinition }[] = [
+  { value: "hachure", label: "Hachure", icon: faBarsStaggered },
+  { value: "cross-hatch", label: "Cross-hatch", icon: faHashtag },
+  { value: "solid", label: "Solid", icon: faSquare },
+];
+
+const SLOPPINESS_OPTIONS: { value: Sloppiness; label: string; icon: IconDefinition }[] = [
+  { value: "clean", label: "Clean", icon: faRulerHorizontal },
+  { value: "sketchy", label: "Hand-drawn", icon: faSignature },
+];
+
+const FONT_FAMILY_OPTIONS: { value: FontFamily; label: string; icon: IconDefinition }[] = [
+  { value: "hand", label: "Hand-drawn", icon: faFeatherPointed },
+  { value: "sans", label: "Normal", icon: faFont },
+  { value: "mono", label: "Code", icon: faCode },
+];
+
+// Previews of a stroke's width/dash pattern — value swatches, like the
+// color swatches, rather than icons.
+const STROKE_PREVIEW_WIDTH = 18;
+const STROKE_STYLE_PREVIEW_THICKNESS = 2;
+
+const OPACITY_STEP = 10;
+
+export interface StyleSource {
+  [key: string]: unknown;
 }
 
-// Docked in the toolbox rather than floating next to whatever's selected —
-// simpler to position, and it naturally handles multi-select by only
-// showing the fields every selected element's type actually has.
+interface Props {
+  // Every selected element's data — or, with nothing selected, a prototype
+  // for the active drawing tool so the style can be picked before drawing.
+  sources: StyleSource[];
+  cardColor: string | null;
+  cardSwatches: { label: string; value: string }[];
+  hasSelection: boolean;
+  onStyleChange: (patch: Partial<ElementStyle>) => void;
+  onCardColorChange: (color: string) => void;
+  onBringToFront: () => void;
+  onBringForward: () => void;
+  onSendBackward: () => void;
+  onSendToBack: () => void;
+  onDuplicate: () => void;
+  onDelete: () => void;
+  style?: React.CSSProperties;
+}
+
+function readStyleValue<Key extends keyof ElementStyle>(sources: StyleSource[], key: Key): ElementStyle[Key] | undefined {
+  const source = sources.find((candidate) => key in candidate);
+  return source?.[key] as ElementStyle[Key] | undefined;
+}
+
 export default function StylePanel({
-  selection,
-  onColorChange,
-  onFontWeightChange,
-  onStrokeStyleChange,
+  sources,
+  cardColor,
+  cardSwatches,
+  hasSelection,
+  onStyleChange,
+  onCardColorChange,
   onBringToFront,
+  onBringForward,
+  onSendBackward,
   onSendToBack,
+  onDuplicate,
+  onDelete,
+  style,
 }: Props) {
-  const [showColors, setShowColors] = useState(false);
-
-  if (selection.length === 0) return null;
-
-  const first = selection[0];
-  const firstColor = first.data.color as string;
-  const allText = selection.every((node) => node.type === "textElement");
-  const allStrokeable = selection.every(
-    (node) => node.type === "shapeElement" || node.type === "lineElement",
+  const strokeColor = readStyleValue(sources, "strokeColor");
+  const backgroundColor = readStyleValue(sources, "backgroundColor");
+  const fillStyle = readStyleValue(sources, "fillStyle");
+  const strokeWidth = readStyleValue(sources, "strokeWidth");
+  const strokeStyle = readStyleValue(sources, "strokeStyle");
+  const sloppiness = readStyleValue(sources, "sloppiness");
+  const fontFamily = readStyleValue(sources, "fontFamily");
+  const fontSize = readStyleValue(sources, "fontSize");
+  const fontWeight = readStyleValue(sources, "fontWeight");
+  const opacity = readStyleValue(sources, "opacity");
+  const hasAnyFill = sources.some(
+    (source) => typeof source.backgroundColor === "string" && source.backgroundColor !== TRANSPARENT_COLOR,
   );
-  const firstFontWeight = allText ? (first.data.fontWeight as FontWeight) : undefined;
-  const firstStrokeStyle = allStrokeable ? (first.data.strokeStyle as StrokeStyle) : undefined;
+  const isOnlyText = sources.length > 0 && sources.every((source) => "text" in source);
 
   return (
-    <div className="flex items-center gap-1">
-      <div className="relative">
-        <button
-          onClick={() => setShowColors((s) => !s)}
-          title="Color"
-          className="w-7 h-7 flex items-center justify-center rounded-md border-none bg-transparent hover:bg-surface-subtle cursor-pointer"
-        >
-          <span
-            className="inline-block w-3.5 h-3.5 rounded-full shrink-0"
-            style={{ background: firstColor, border: "1.5px solid rgba(0,0,0,0.15)" }}
+    <div
+      role="toolbar"
+      aria-label="Element style"
+      className="fixed z-[950] w-[212px] max-h-[calc(100vh-140px)] overflow-y-auto cc-scroll
+                 flex flex-col gap-3 p-3 rounded-xl bg-surface-raised border border-border shadow-card
+                 select-none font-sans animate-node-in"
+      style={style}
+    >
+      {strokeColor !== undefined && (
+        <Section title={isOnlyText ? "Text color" : "Stroke"}>
+          <ColorSwatches
+            color={strokeColor}
+            swatches={STROKE_SWATCHES}
+            allowCustom
+            onChange={(color) => onStyleChange({ strokeColor: color })}
           />
-        </button>
-        {showColors && (
-          <div
-            className="absolute top-full mt-2 left-0 p-2 rounded-lg w-[168px]
-                       bg-surface-overlay border border-border shadow-card z-30"
-          >
-            <ColorSwatches
-              color={firstColor}
-              onChange={(color) => {
-                onColorChange(color);
-                setShowColors(false);
-              }}
-            />
-          </div>
-        )}
-      </div>
-
-      {firstFontWeight !== undefined && (
-        <button
-          onClick={() => onFontWeightChange(firstFontWeight === "bold" ? "normal" : "bold")}
-          title="Bold"
-          className={cn(
-            "w-7 h-7 flex items-center justify-center rounded-md border-none cursor-pointer transition-colors",
-            firstFontWeight === "bold"
-              ? "bg-accent text-white"
-              : "bg-transparent text-foreground-muted hover:bg-surface-subtle",
-          )}
-        >
-          <FontAwesomeIcon icon={faBold} className="w-3 h-3" />
-        </button>
+        </Section>
       )}
 
-      {firstStrokeStyle !== undefined && (
-        <button
-          onClick={() => onStrokeStyleChange(firstStrokeStyle === "dashed" ? "solid" : "dashed")}
-          title="Dashed stroke"
-          className={cn(
-            "w-7 h-7 flex items-center justify-center rounded-md border-none cursor-pointer transition-colors",
-            firstStrokeStyle === "dashed"
-              ? "bg-accent text-white"
-              : "bg-transparent text-foreground-muted hover:bg-surface-subtle",
-          )}
-        >
-          <FontAwesomeIcon icon={faGripLines} className="w-3 h-3" />
-        </button>
+      {backgroundColor !== undefined && (
+        <Section title="Background">
+          <ColorSwatches
+            color={backgroundColor}
+            swatches={BACKGROUND_SWATCHES}
+            allowCustom
+            onChange={(color) => onStyleChange({ backgroundColor: color })}
+          />
+        </Section>
       )}
 
-      {/* Layering — every selectable element type has a z-index, so unlike
-          font weight/stroke style above these two are never gated on the
-          selection's composition. */}
-      <button
-        onClick={onBringToFront}
-        title="Bring to front"
-        className="w-7 h-7 flex items-center justify-center rounded-md border-none bg-transparent text-foreground-muted hover:bg-surface-subtle cursor-pointer"
-      >
-        <FontAwesomeIcon icon={faAnglesUp} className="w-3 h-3" />
-      </button>
-      <button
-        onClick={onSendToBack}
-        title="Send to back"
-        className="w-7 h-7 flex items-center justify-center rounded-md border-none bg-transparent text-foreground-muted hover:bg-surface-subtle cursor-pointer"
-      >
-        <FontAwesomeIcon icon={faAnglesDown} className="w-3 h-3" />
-      </button>
+      {fillStyle !== undefined && hasAnyFill && (
+        <Section title="Fill">
+          <ButtonRow>
+            {FILL_STYLE_OPTIONS.map((option) => (
+              <OptionButton
+                key={option.value}
+                label={option.label}
+                isActive={fillStyle === option.value}
+                onClick={() => onStyleChange({ fillStyle: option.value })}
+              >
+                <FontAwesomeIcon icon={option.icon} className="w-3 h-3" />
+              </OptionButton>
+            ))}
+          </ButtonRow>
+        </Section>
+      )}
+
+      {strokeWidth !== undefined && (
+        <Section title="Stroke width">
+          <ButtonRow>
+            {STROKE_WIDTH_OPTIONS.map((option) => (
+              <OptionButton
+                key={option.value}
+                label={option.label}
+                isActive={strokeWidth === option.value}
+                onClick={() => onStyleChange({ strokeWidth: option.value })}
+              >
+                <span
+                  className="block rounded-full bg-current"
+                  style={{ width: STROKE_PREVIEW_WIDTH, height: option.value + 1 }}
+                />
+              </OptionButton>
+            ))}
+          </ButtonRow>
+        </Section>
+      )}
+
+      {strokeStyle !== undefined && (
+        <Section title="Stroke style">
+          <ButtonRow>
+            {STROKE_STYLE_OPTIONS.map((option) => (
+              <OptionButton
+                key={option.value}
+                label={option.label}
+                isActive={strokeStyle === option.value}
+                onClick={() => onStyleChange({ strokeStyle: option.value })}
+              >
+                <span
+                  className="block border-current"
+                  style={{
+                    width: STROKE_PREVIEW_WIDTH,
+                    borderTopWidth: STROKE_STYLE_PREVIEW_THICKNESS,
+                    borderTopStyle: option.value,
+                  }}
+                />
+              </OptionButton>
+            ))}
+          </ButtonRow>
+        </Section>
+      )}
+
+      {sloppiness !== undefined && (
+        <Section title="Sloppiness">
+          <ButtonRow>
+            {SLOPPINESS_OPTIONS.map((option) => (
+              <OptionButton
+                key={option.value}
+                label={option.label}
+                isActive={sloppiness === option.value}
+                onClick={() => onStyleChange({ sloppiness: option.value })}
+              >
+                <FontAwesomeIcon icon={option.icon} className="w-3 h-3" />
+              </OptionButton>
+            ))}
+          </ButtonRow>
+        </Section>
+      )}
+
+      {fontFamily !== undefined && (
+        <Section title="Font family">
+          <ButtonRow>
+            {FONT_FAMILY_OPTIONS.map((option) => (
+              <OptionButton
+                key={option.value}
+                label={option.label}
+                isActive={fontFamily === option.value}
+                onClick={() => onStyleChange({ fontFamily: option.value })}
+              >
+                <FontAwesomeIcon icon={option.icon} className="w-3 h-3" />
+              </OptionButton>
+            ))}
+            {fontWeight !== undefined && (
+              <OptionButton
+                label="Bold"
+                isActive={fontWeight === "bold"}
+                onClick={() => onStyleChange({ fontWeight: fontWeight === "bold" ? "normal" : "bold" })}
+              >
+                <FontAwesomeIcon icon={faBold} className="w-3 h-3" />
+              </OptionButton>
+            )}
+          </ButtonRow>
+        </Section>
+      )}
+
+      {fontSize !== undefined && (
+        <Section title="Font size">
+          <ButtonRow>
+            {FONT_SIZE_OPTIONS.map((option) => (
+              <OptionButton
+                key={option.value}
+                label={option.title}
+                isActive={fontSize === option.value}
+                onClick={() => onStyleChange({ fontSize: option.value })}
+              >
+                <span className="text-[11px] font-semibold">{option.label}</span>
+              </OptionButton>
+            ))}
+          </ButtonRow>
+        </Section>
+      )}
+
+      {opacity !== undefined && (
+        <Section title={`Opacity · ${opacity}`}>
+          <input
+            type="range"
+            aria-label="Opacity"
+            min={0}
+            max={100}
+            step={OPACITY_STEP}
+            value={opacity}
+            onChange={(event) => onStyleChange({ opacity: Number(event.target.value) })}
+            className="w-full accent-accent cursor-pointer"
+          />
+        </Section>
+      )}
+
+      {cardColor !== null && (
+        <Section title="Card color">
+          <ColorSwatches color={cardColor} swatches={cardSwatches} onChange={onCardColorChange} />
+        </Section>
+      )}
+
+      {hasSelection && (
+        <>
+          <Section title="Layers">
+            <ButtonRow>
+              <OptionButton label="Send to back (Ctrl+Shift+[)" onClick={onSendToBack}>
+                <FontAwesomeIcon icon={faAnglesDown} className="w-3 h-3" />
+              </OptionButton>
+              <OptionButton label="Send backward (Ctrl+[)" onClick={onSendBackward}>
+                <FontAwesomeIcon icon={faAngleDown} className="w-3 h-3" />
+              </OptionButton>
+              <OptionButton label="Bring forward (Ctrl+])" onClick={onBringForward}>
+                <FontAwesomeIcon icon={faAngleUp} className="w-3 h-3" />
+              </OptionButton>
+              <OptionButton label="Bring to front (Ctrl+Shift+])" onClick={onBringToFront}>
+                <FontAwesomeIcon icon={faAnglesUp} className="w-3 h-3" />
+              </OptionButton>
+            </ButtonRow>
+          </Section>
+          <Section title="Actions">
+            <ButtonRow>
+              <OptionButton label="Duplicate (Ctrl+D)" onClick={onDuplicate}>
+                <FontAwesomeIcon icon={faCopy} className="w-3 h-3" />
+              </OptionButton>
+              <OptionButton label="Delete (Del)" onClick={onDelete}>
+                <FontAwesomeIcon icon={faTrashCan} className="w-3 h-3" />
+              </OptionButton>
+            </ButtonRow>
+          </Section>
+        </>
+      )}
     </div>
+  );
+}
+
+function Section({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <div className="flex flex-col gap-1.5">
+      <span className="text-[10.5px] font-semibold uppercase tracking-[0.06em] text-foreground-muted">{title}</span>
+      {children}
+    </div>
+  );
+}
+
+function ButtonRow({ children }: { children: ReactNode }) {
+  return <div className="flex flex-wrap gap-1">{children}</div>;
+}
+
+function OptionButton({
+  label,
+  isActive = false,
+  onClick,
+  children,
+}: {
+  label: string;
+  isActive?: boolean;
+  onClick: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      title={label}
+      aria-label={label}
+      aria-pressed={isActive}
+      className={cn(
+        "w-8 h-8 flex items-center justify-center rounded-md border cursor-pointer transition-colors",
+        isActive
+          ? "bg-accent/20 border-accent text-foreground"
+          : "bg-surface-subtle border-transparent text-foreground-muted hover:text-foreground hover:border-border",
+      )}
+    >
+      {children}
+    </button>
   );
 }

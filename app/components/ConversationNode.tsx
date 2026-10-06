@@ -18,6 +18,7 @@ import ColorSwatches from "./ColorSwatches";
 import MarkdownContent from "./MarkdownContent";
 import AnchorHandles from "./AnchorHandles";
 import ResizeHandles from "./ResizeHandles";
+import CopyButton from "./CopyButton";
 
 // Handles are invisible connection points that only exist so the custom
 // "branch" edge knows which side of the card to attach to — end
@@ -45,6 +46,7 @@ export default function ConversationNode({
     height,
     branchParentPromptPreview,
     isBranchActive,
+    isBindingTarget,
     onToggleBranch,
     onFocusNode,
     onExpandNode,
@@ -113,14 +115,14 @@ export default function ConversationNode({
         "animate-node-in font-sans cursor-pointer group flex flex-col",
         "transition-[border-color] duration-200 rounded-xl border",
         isBranchActive || selected ? "border-accent" : "border-border",
+        isBindingTarget && "outline-4 outline-solid outline-accent/50",
       )}
     >
       {/* Not rendered at all while minimized — the card's actual DOM height
           is the collapsed peek strip then, not data.height, so resizing
           against it would corrupt the stored size for once it's expanded. */}
-      {!minimized && (
+      {selected && !minimized && (
         <ResizeHandles
-          isVisible={selected}
           minWidth={CONVERSATION_MIN_WIDTH}
           minHeight={CONVERSATION_MIN_HEIGHT}
           onResize={onResizeElement}
@@ -136,9 +138,9 @@ export default function ConversationNode({
           CanvasChat's isValidConnection for where that's enforced). */}
       <AnchorHandles visible={selected} />
 
-      {/* ── Header / drag handle — click anywhere on it to collapse/expand ── */}
+      {/* ── Header / drag handle — clicking it selects the card; only the
+          chevron collapses/expands it ── */}
       <div
-        onClick={onToggleMinimize}
         className={cn(
           "drag-handle shrink-0 flex items-center gap-2 px-3 py-2.5 cursor-grab active:cursor-grabbing",
           !minimized && "border-b border-border-subtle",
@@ -217,7 +219,7 @@ export default function ConversationNode({
         className="relative overflow-hidden transition-[height] duration-[280ms] ease-[cubic-bezier(0.4,0,0.2,1)] nodrag"
         style={minimized ? { height: MINIMIZED_PEEK_HEIGHT } : { flex: "1 1 auto", minHeight: 0 }}
       >
-        <div className="cc-scroll overflow-y-auto h-full px-3.5 pt-2.5 pb-3.5 cursor-auto">
+        <div className="cc-scroll nowheel overflow-y-auto h-full px-3.5 pt-2.5 pb-3.5 cursor-auto">
           {/* Branch-from chip */}
           {branchParentPromptPreview && (
             <div
@@ -259,9 +261,17 @@ export default function ConversationNode({
 
           {/* AI */}
           <div className="mb-3">
-            <p className="text-[10px] font-bold uppercase tracking-[0.08em] mb-1 text-accent">
-              AI
-            </p>
+            <div className="flex items-center justify-between mb-1">
+              <p className="text-[10px] font-bold uppercase tracking-[0.08em] m-0 text-accent">
+                AI
+              </p>
+              {!loading && response && (
+                <CopyButton
+                  text={response}
+                  className={cn("opacity-60 hover:opacity-100 p-0.5", mutedCls)}
+                />
+              )}
+            </div>
             {loading ? (
               <div className="flex items-center gap-2 text-[14.5px] text-foreground-muted">
                 <span className="flex gap-[3px]">

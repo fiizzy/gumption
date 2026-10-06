@@ -13,11 +13,14 @@
     "windows": [
       {
         "title": "Canvas Chat",
-        "width": 800,
-        "height": 600,
+        "width": 1400,
+        "height": 900,
         "resizable": true,
         "fullscreen": false,
-        "theme": "Dark"
+        "theme": "Dark",
+        "minWidth": 900,
+        "minHeight": 600,
+        "dragDropEnabled": false
       }
     ],
     "security": {

@@ -1,54 +1,101 @@
 "use client";
 
 import { useState, useRef, useCallback, useEffect, useMemo } from "react";
-import type { MouseEvent as ReactMouseEvent } from "react";
+import type { DragEvent as ReactDragEvent, MouseEvent as ReactMouseEvent } from "react";
 import {
   ReactFlow,
   ReactFlowProvider,
   Background,
   BackgroundVariant,
+  ConnectionMode,
   applyNodeChanges,
-  applyEdgeChanges,
-  addEdge,
   useReactFlow,
   useViewport,
   type NodeChange,
-  type EdgeChange,
   type Connection,
+  type Node,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
-import {
-  faCodeBranch,
-  faLayerGroup,
-  faXmark,
-} from "@fortawesome/free-solid-svg-icons";
+import { faCodeBranch, faLayerGroup, faXmark } from "@fortawesome/free-solid-svg-icons";
 import ConversationNodeComponent from "./ConversationNode";
-import CanvasElementComponent from "./CanvasElement";
+import ShapeElementComponent from "./ShapeElement";
+import TextElementComponent from "./TextElement";
 import LineElementComponent from "./LineElement";
-import { BranchEdgeComponent, AnchorEdgeComponent, CanvasEdgeMarkerDefs } from "./CanvasEdges";
+import ImageElementComponent from "./ImageElement";
+import { BranchEdgeComponent, CanvasEdgeMarkerDefs } from "./CanvasEdges";
 import ChatInput from "./ChatInput";
 import Joystick from "./Joystick";
 import Toolbox from "./Toolbox";
-import type { Mode } from "./Toolbox";
-import StylePanel from "./StylePanel";
+import type { DrawingMode, Mode } from "./Toolbox";
+import StylePanel, { type StyleSource } from "./StylePanel";
+import MainMenu from "./MainMenu";
+import ConfirmDialog, { type ConfirmRequest } from "./ConfirmDialog";
+import ExportDialog, { type ExportSettings } from "./ExportDialog";
+import ShortcutsDialog from "./ShortcutsDialog";
 import MarkdownContent from "./MarkdownContent";
+import CopyButton from "./CopyButton";
+import { ANCHOR_HANDLE_PREFIX } from "./AnchorHandles";
 import ProjectsSidebar, { SIDEBAR_EXPANDED_WIDTH, SIDEBAR_COLLAPSED_WIDTH } from "./ProjectsSidebar";
-import { DEFAULT_COLOR } from "../lib/color";
+import { DEFAULT_COLOR, SWATCHES } from "../lib/color";
+import {
+  DEFAULT_ELEMENT_STYLE,
+  IMAGE_STYLE_KEYS,
+  LINE_STYLE_KEYS,
+  MAX_FONT_SIZE,
+  MIN_FONT_SIZE,
+  SHAPE_STYLE_KEYS,
+  TEXT_STYLE_KEYS,
+  createSeed,
+  pickStyle,
+} from "../lib/elementStyle";
+import {
+  ANCHOR_FOCUS,
+  detachLineBindings,
+  findBindingAt,
+  findTopmostShapeAt,
+  getBoxesBounds,
+  getLineEndpoints,
+  getLineGeometry,
+  getNodeBox,
+  pointFromFocus,
+  resolveLineBindings,
+  snapAngle,
+  sortTopmostFirst,
+  type AnchorSide,
+  type Box,
+  type BindingCandidate,
+} from "../lib/geometry";
+import { useCanvasHistory } from "../lib/useCanvasHistory";
+import { DEFAULT_PROJECT_TITLE, useProjects } from "../lib/useProjects";
+import {
+  CANVAS_FILE_EXTENSION,
+  createCanvasDocument,
+  createClipboardText,
+  parseCanvasDocument,
+  parseClipboardText,
+  type CanvasDocument,
+} from "../lib/serialization";
+import { cloneNodes } from "../lib/cloneNodes";
+import { isImageFile, loadImageFile } from "../lib/imageFiles";
+import { openTextFile, pickFiles, saveFile, type FileTypeFilter } from "../lib/fileAccess";
+import { renderCanvasImage } from "../lib/exportImage";
 import type {
+  Binding,
+  BranchEdge,
   CanvasNode,
   ConversationNode as ConversationNodeState,
-  TextElementNode,
-  ShapeElementNode,
-  LineElementNode,
-  HydratedCanvasNode,
-  CanvasEdge,
-  AnchorEdge,
-  ShapeKind,
-  StrokeStyle,
-  FontWeight,
-  Point,
+  ElementStyle,
   Harness,
+  HydratedCanvasNode,
+  ImageElementNode,
+  LineElementNode,
+  LineKind,
+  Point,
+  ResizeHandleKind,
+  ShapeElementNode,
+  ShapeKind,
+  TextElementNode,
 } from "../types";
 import { simulateAI } from "../lib/ai";
 import { invoke } from "@tauri-apps/api/core";
@@ -58,37 +105,84 @@ const NODE_H_EST = 220;
 const SCALE_MIN = 0.1;
 const SCALE_MAX = 4;
 const SHAPE_DEFAULT_SIZE = 140;
-const SHAPE_MIN_DRAG_SIZE = 24; // px, in flow space — floor for a drag-drawn shape's width/height
+const SHAPE_MIN_DRAG_SIZE = 8;
 const CONVERSATION_DEFAULT_HEIGHT = 260;
 const TOP_PANEL_CLEARANCE = 80; // clears the floating toolbox (top-4 + its own height)
-const DRAG_COMMIT_THRESHOLD = 4; // px, in flow space — below this a drag is treated as an accidental click
-const SNAP_RADIUS = 24; // px, in flow space — how close a line/arrow endpoint must be to a node anchor to snap to it
-const TEXT_ELEMENT_DEFAULT_SIZE = { width: 200, height: 40 }; // starting size for a newly created text element
-const TEXT_DEFAULT_FONT_SIZE = 16;
-const TEXT_MIN_FONT_SIZE = 10; // floor so scaling a corner down never shrinks text to unreadable/zero
+const STYLE_PANEL_GUTTER = 16;
+const DRAG_COMMIT_THRESHOLD_PX = 4; // screen px — below this a drag is treated as a click
+const SNAP_RADIUS_PX = 20; // screen px — how close an endpoint must be to bind/snap to an element
+const TEXT_DEFAULT_WIDTH = 240;
+const NUDGE_STEP = 1;
+const NUDGE_STEP_LARGE = 10;
+const DUPLICATE_OFFSET = 10;
+const IMAGE_MAX_INITIAL_SIZE = 480;
+const IMAGE_STACK_OFFSET = 24;
+const VIEWPORT_ANIMATION_MS = 500;
+const ZOOM_ANIMATION_MS = 200;
+const PAN_ON_SCROLL_SPEED = 1;
+const FIT_SELECTION_PADDING = 0.2;
+const FIT_SELECTION_MAX_ZOOM = 2;
+const NOTICE_DURATION_MS = 4000;
+const THEME_STORAGE_KEY = "canvas-chat:theme";
+const BRANCH_GAP = 52;
+const FREE_SPOT_GAP = 24;
+const FREE_SPOT_MAX_TRIES = 200;
+const EMPTY_ID_SET: ReadonlySet<string> = new Set();
 
-const MODE_LABEL: Record<Mode, string> = {
+const CANVAS_FILE_FILTER: FileTypeFilter = {
+  name: "Canvas Chat",
+  extensions: [CANVAS_FILE_EXTENSION, "json"],
+  mimeType: "application/json",
+};
+const EXPORT_FILE_FILTERS: Record<ExportSettings["format"], FileTypeFilter> = {
+  png: { name: "PNG image", extensions: ["png"], mimeType: "image/png" },
+  svg: { name: "SVG image", extensions: ["svg"], mimeType: "image/svg+xml" },
+};
+
+// Only the Tab/Space select-pan toggles announce themselves — those
+// switch modes without the pointer anywhere near the toolbar.
+const MODE_LABEL: Record<"select" | "pan", string> = {
   select: "Select mode",
   pan: "Pan mode",
-  text: "Text mode",
-  "shape-square": "Square tool",
-  "shape-circle": "Circle tool",
-  "shape-diamond": "Diamond tool",
-  line: "Line tool — click and drag",
-  arrow: "Arrow tool — click and drag",
+};
+
+const SHAPE_KIND_BY_MODE: Partial<Record<Mode, ShapeKind>> = {
+  rectangle: "rectangle",
+  ellipse: "ellipse",
+  diamond: "diamond",
+};
+
+// Single-key tool shortcuts, matching Excalidraw's (7 is its pencil, which
+// this app doesn't have; 9 inserts an image and is handled separately).
+const TOOL_SHORTCUTS: Record<string, Mode> = {
+  v: "select",
+  "1": "select",
+  h: "pan",
+  r: "rectangle",
+  "2": "rectangle",
+  d: "diamond",
+  "3": "diamond",
+  o: "ellipse",
+  "4": "ellipse",
+  a: "arrow",
+  "5": "arrow",
+  l: "line",
+  "6": "line",
+  t: "text",
+  "8": "text",
 };
 
 // Module-level so identity is stable across renders — xyflow re-measures
 // and re-warns if nodeTypes/edgeTypes objects change identity every pass.
 const nodeTypes = {
   conversation: ConversationNodeComponent,
-  textElement: CanvasElementComponent,
-  shapeElement: CanvasElementComponent,
+  textElement: TextElementComponent,
+  shapeElement: ShapeElementComponent,
   lineElement: LineElementComponent,
+  imageElement: ImageElementComponent,
 };
 const edgeTypes = {
   branch: BranchEdgeComponent,
-  anchor: AnchorEdgeComponent,
 };
 
 interface ModalContent {
@@ -97,14 +191,100 @@ interface ModalContent {
   parentPrompt?: string;
 }
 
-type DrawKind = "line" | "arrow" | "shape-square" | "shape-circle" | "shape-diamond";
+type DragDrawMode = Exclude<DrawingMode, "text">;
 
 interface DrawPreview {
-  kind: DrawKind;
-  startClientX: number;
-  startClientY: number;
-  currentClientX: number;
-  currentClientY: number;
+  kind: DragDrawMode;
+  start: Point;
+  end: Point;
+}
+
+interface Notice {
+  id: number;
+  text: string;
+  tone: "info" | "error";
+}
+
+// Sliders, checkboxes, color pickers etc. keep focus after use but never
+// take typed characters, so they must not swallow canvas shortcuts.
+const TEXT_INPUT_TYPES = new Set(["text", "search", "email", "url", "tel", "password", "number"]);
+
+function isEditableTarget(target: EventTarget | null): boolean {
+  return (
+    (target instanceof HTMLInputElement && TEXT_INPUT_TYPES.has(target.type)) ||
+    target instanceof HTMLTextAreaElement ||
+    target instanceof HTMLSelectElement ||
+    (target instanceof HTMLElement && target.isContentEditable)
+  );
+}
+
+function isDragDrawMode(mode: Mode): mode is DragDrawMode {
+  return mode === "rectangle" || mode === "ellipse" || mode === "diamond" || mode === "line" || mode === "arrow";
+}
+
+function getNextZIndex(nodes: CanvasNode[]): number {
+  return nodes.reduce((max, node) => Math.max(max, node.zIndex ?? 0), 0) + 1;
+}
+
+function deselectAll(nodes: CanvasNode[]): CanvasNode[] {
+  return nodes.map((node) => (node.selected ? ({ ...node, selected: false } as CanvasNode) : node));
+}
+
+function waitForFrames(count: number): Promise<void> {
+  return new Promise((resolve) => {
+    const step = (remaining: number) => {
+      if (remaining === 0) resolve();
+      else requestAnimationFrame(() => step(remaining - 1));
+    };
+    step(count);
+  });
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+type LayerDirection = "front" | "forward" | "backward" | "back";
+
+// Rewrites every node's zIndex to its position in a single stacking order,
+// moving the selection within it. Normalizing each time keeps the values
+// small and makes "one step" moves well-defined.
+function reorderLayers(nodes: CanvasNode[], direction: LayerDirection): CanvasNode[] {
+  const selectedIds = new Set(nodes.filter((node) => node.selected).map((node) => node.id));
+  if (selectedIds.size === 0) return nodes;
+  let order = sortTopmostFirst(nodes)
+    .reverse()
+    .map((node) => node.id);
+  const isSelected = (id: string) => selectedIds.has(id);
+  if (direction === "front") order = [...order.filter((id) => !isSelected(id)), ...order.filter(isSelected)];
+  if (direction === "back") order = [...order.filter(isSelected), ...order.filter((id) => !isSelected(id))];
+  if (direction === "forward") {
+    for (let index = order.length - 2; index >= 0; index--) {
+      if (isSelected(order[index]) && !isSelected(order[index + 1])) {
+        [order[index], order[index + 1]] = [order[index + 1], order[index]];
+      }
+    }
+  }
+  if (direction === "backward") {
+    for (let index = 1; index < order.length; index++) {
+      if (isSelected(order[index]) && !isSelected(order[index - 1])) {
+        [order[index], order[index - 1]] = [order[index - 1], order[index]];
+      }
+    }
+  }
+  const zIndexById = new Map(order.map((id, index) => [id, index]));
+  return nodes.map((node) => {
+    const zIndex = zIndexById.get(node.id)!;
+    return node.zIndex === zIndex ? node : ({ ...node, zIndex } as CanvasNode);
+  });
+}
+
+function readStoredTheme(): "light" | "dark" {
+  try {
+    return window.localStorage.getItem(THEME_STORAGE_KEY) === "light" ? "light" : "dark";
+  } catch {
+    return "dark";
+  }
 }
 
 export default function CanvasChat() {
@@ -117,36 +297,36 @@ export default function CanvasChat() {
 
 function CanvasChatInner() {
   const [nodes, setNodes] = useState<CanvasNode[]>([]);
-  const [linkEdges, setLinkEdges] = useState<AnchorEdge[]>([]);
   const [activeNodeId, setActiveNodeId] = useState<string | null>(null);
   const [theme, setTheme] = useState<"light" | "dark">("dark");
   const [selectedHarness, setSelectedHarness] = useState<Harness>("claude");
-  const [isProjectsSidebarCollapsed, setIsProjectsSidebarCollapsed] =
-    useState(false);
+  const [isProjectsSidebarCollapsed, setIsProjectsSidebarCollapsed] = useState(false);
   const [modal, setModal] = useState<ModalContent | null>(null);
-  const modalRef = useRef<ModalContent | null>(null);
-  useEffect(() => {
-    modalRef.current = modal;
-  }, [modal]);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [bindingTargetId, setBindingTargetId] = useState<string | null>(null);
+  const [currentStyle, setCurrentStyle] = useState<ElementStyle>(DEFAULT_ELEMENT_STYLE);
+  const [isToolLocked, setIsToolLocked] = useState(false);
+  const [confirmRequest, setConfirmRequest] = useState<ConfirmRequest | null>(null);
+  const [isExportOpen, setIsExportOpen] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
+  const [isShortcutsOpen, setIsShortcutsOpen] = useState(false);
+  const [notice, setNotice] = useState<Notice | null>(null);
 
   const nodesRef = useRef<CanvasNode[]>([]);
   useEffect(() => {
     nodesRef.current = nodes;
   }, [nodes]);
 
-  const linkEdgesRef = useRef<AnchorEdge[]>([]);
-  useEffect(() => {
-    linkEdgesRef.current = linkEdges;
-  }, [linkEdges]);
+  // Bound line endpoints are derived from their targets' current geometry;
+  // everything downstream (rendering, export, copy, save) reads this.
+  const resolvedNodes = useMemo(() => resolveLineBindings(nodes), [nodes]);
 
-  // Keep the WebView2 window's native theme in sync with the app's own
-  // light/dark toggle — a mismatch between the two is what caused typed
-  // text to render inverted, since CSS color-scheme alone doesn't cover
-  // WebView2's native control theming. No-ops harmlessly outside Tauri
-  // (e.g. a plain browser preview), where this command doesn't exist.
-  useEffect(() => {
-    invoke("set_window_theme", { theme }).catch(() => {});
-  }, [theme]);
+  const themeRootRef = useRef<HTMLDivElement>(null);
+  const canvasWrapperRef = useRef<HTMLDivElement>(null);
+  const lastPointerFlowPositionRef = useRef<Point | null>(null);
+  // Chat nodes whose AI request is still running — a saved "loading" node is
+  // only treated as interrupted when its request isn't among these.
+  const inFlightRequestIdsRef = useRef(new Set<string>());
 
   const {
     getNode,
@@ -154,20 +334,91 @@ function CanvasChatInner() {
     getViewport,
     setViewport,
     screenToFlowPosition,
-    flowToScreenPosition,
     zoomIn,
     zoomOut,
-  } = useReactFlow<CanvasNode, CanvasEdge>();
-  const { zoom: currentZoom } = useViewport(); // reactive — drives the Toolbox's live percentage readout
+    fitView,
+  } = useReactFlow<CanvasNode, BranchEdge>();
+  const viewport = useViewport(); // reactive — drives the zoom readout and draw preview
 
-  const canvasWrapperRef = useRef<HTMLDivElement>(null);
-  const getContainerCenter = useCallback(() => {
+  const noticeIdRef = useRef(0);
+  const notify = useCallback((text: string, tone: Notice["tone"] = "info") => {
+    noticeIdRef.current += 1;
+    setNotice({ id: noticeIdRef.current, text, tone });
+  }, []);
+
+  useEffect(() => {
+    if (!notice) return;
+    const timer = setTimeout(
+      () => setNotice((current) => (current?.id === notice.id ? null : current)),
+      NOTICE_DURATION_MS,
+    );
+    return () => clearTimeout(timer);
+  }, [notice]);
+
+  useEffect(() => {
+    setTheme(readStoredTheme());
+  }, []);
+
+  // Keep the WebView2 window's native theme in sync with the app's own
+  // light/dark toggle — a mismatch between the two is what caused typed
+  // text to render inverted, since CSS color-scheme alone doesn't cover
+  // WebView2's native control theming. No-ops harmlessly outside Tauri.
+  useEffect(() => {
+    invoke("set_window_theme", { theme }).catch(() => {});
+  }, [theme]);
+
+  // Persisted on toggle rather than in an effect, so the initial default
+  // can never overwrite the stored preference before it has been read.
+  const toggleTheme = useCallback(() => {
+    const nextTheme = theme === "dark" ? "light" : "dark";
+    setTheme(nextTheme);
+    try {
+      window.localStorage.setItem(THEME_STORAGE_KEY, nextTheme);
+    } catch {
+      // Theme preference is a convenience; nothing to do if storage is unavailable.
+    }
+  }, [theme]);
+
+  const history = useCanvasHistory({ nodes, setNodes, isEditing: editingId !== null });
+
+  // ── Projects / persistence ────────────────────────────────────
+  const applyDocument = useCallback(
+    (document: CanvasDocument) => {
+      setNodes(document.nodes);
+      history.reset(document.nodes);
+      setActiveNodeId(null);
+      setEditingId(null);
+      setModal(null);
+      setViewport(document.viewport ?? { x: 0, y: 0, zoom: 1 });
+    },
+    [history, setViewport],
+  );
+
+  const projects = useProjects({
+    getSnapshot: () => ({ nodes: nodesRef.current, viewport: getViewport() }),
+    applyDocument,
+    isRequestInFlight: (nodeId) => inFlightRequestIdsRef.current.has(nodeId),
+    onError: (message) => notify(message, "error"),
+  });
+  const { notifyNodesChanged } = projects;
+
+  useEffect(() => {
+    if (projects.isReady) notifyNodesChanged(nodes);
+  }, [nodes, projects.isReady, notifyNodesChanged]);
+
+  const canvasWrapperCenter = useCallback(() => {
     const rect = canvasWrapperRef.current?.getBoundingClientRect();
     return {
       centerX: (rect?.width ?? window.innerWidth) / 2,
       centerY: (rect?.height ?? window.innerHeight) / 2,
     };
   }, []);
+
+  const getViewportCenterFlowPosition = useCallback((): Point => {
+    const rect = canvasWrapperRef.current?.getBoundingClientRect();
+    if (!rect) return { x: 0, y: 0 };
+    return screenToFlowPosition({ x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 });
+  }, [screenToFlowPosition]);
 
   // Falls back to the estimated card size before a node has been measured
   // (e.g. the instant it's created, one render before layout settles).
@@ -183,10 +434,9 @@ function CanvasChatInner() {
   );
 
   // ── Interaction mode: select / pan / draw tools ────────────────
-  // `mode` is the persistent tool, toggled by Tab (or the toolbox).
-  // Holding Space temporarily forces pan on top of it, then releases
-  // back to `mode` — the two never fight because effectiveMode below
-  // is the only thing the canvas actually reads.
+  // `mode` is the persistent tool. Holding Space temporarily forces pan on
+  // top of it, then releases back to `mode` — effectiveMode below is the
+  // only thing the canvas actually reads.
   const [mode, setModeState] = useState<Mode>("select");
   const modeRef = useRef<Mode>("select");
 
@@ -195,44 +445,30 @@ function CanvasChatInner() {
 
   const effectiveMode: Mode = isSpaceDown ? "pan" : mode;
   const isTextMode = effectiveMode === "text";
-  // Square/circle/diamond are drag-drawn (Figma-style: drag defines the
-  // bounds, a plain click falls back to a default size) — same drag-gesture
-  // machinery as line/arrow, just committing a different element shape.
-  const isDragShapeMode =
-    effectiveMode === "shape-square" ||
-    effectiveMode === "shape-circle" ||
-    effectiveMode === "shape-diamond";
-  const isDrawLineMode = effectiveMode === "line" || effectiveMode === "arrow";
-  const isDragMode = isDragShapeMode || isDrawLineMode;
+  const isDragMode = isDragDrawMode(effectiveMode);
+  const isCreationMode = isTextMode || isDragMode;
 
-  const [modeToast, setModeToast] = useState<{
-    text: string;
-    id: number;
-  } | null>(null);
+  const [modeToast, setModeToast] = useState<{ text: string; id: number } | null>(null);
   const modeToastId = useRef(0);
   const announceMode = useCallback((text: string) => {
     modeToastId.current += 1;
     setModeToast({ text, id: modeToastId.current });
   }, []);
 
-  const setMode = useCallback(
-    (next: Mode) => {
-      if (modeRef.current === next) return;
-      modeRef.current = next;
-      setModeState(next);
-      if (!spaceDownRef.current) announceMode(MODE_LABEL[next]);
-    },
-    [announceMode],
-  );
+  const setMode = useCallback((next: Mode) => {
+    if (modeRef.current === next) return;
+    modeRef.current = next;
+    setModeState(next);
+  }, []);
 
-  const toggleMode = useCallback(() => {
-    setMode(modeRef.current === "select" ? "pan" : "select");
-  }, [setMode]);
+  const finishCreation = useCallback(() => {
+    if (!isToolLocked) setMode("select");
+  }, [isToolLocked, setMode]);
 
   // ── Viewport navigation ──────────────────────────────────────
   const centerOn = useCallback(
     (worldX: number, worldY: number) => {
-      const { centerX, centerY } = getContainerCenter();
+      const { centerX, centerY } = canvasWrapperCenter();
       const zoom = getViewport().zoom;
       setViewport(
         {
@@ -240,10 +476,10 @@ function CanvasChatInner() {
           y: centerY - (worldY + NODE_H_EST / 2) * zoom,
           zoom,
         },
-        { duration: 500 },
+        { duration: VIEWPORT_ANIMATION_MS },
       );
     },
-    [getContainerCenter, getViewport, setViewport],
+    [canvasWrapperCenter, getViewport, setViewport],
   );
 
   const focusNode = useCallback(
@@ -251,17 +487,17 @@ function CanvasChatInner() {
       const node = getNode(nodeId);
       if (!node) return;
       const { w, h } = getNodeDims(nodeId);
-      const { centerX, centerY } = getContainerCenter();
+      const { centerX, centerY } = canvasWrapperCenter();
       setViewport(
         {
           x: centerX - (node.position.x + w / 2),
           y: centerY - (node.position.y + h / 2),
           zoom: 1,
         },
-        { duration: 500 },
+        { duration: VIEWPORT_ANIMATION_MS },
       );
     },
-    [getNode, getNodeDims, getContainerCenter, setViewport],
+    [getNode, getNodeDims, canvasWrapperCenter, setViewport],
   );
 
   // Centres the centroid of all nodes at 100% zoom (deliberately not
@@ -269,8 +505,8 @@ function CanvasChatInner() {
   const fitAll = useCallback(() => {
     const allNodes = getNodes();
     if (!allNodes.length) return;
-    let centroidSumX = 0,
-      centroidSumY = 0;
+    let centroidSumX = 0;
+    let centroidSumY = 0;
     allNodes.forEach((node) => {
       const { w, h } = getNodeDims(node.id);
       centroidSumX += node.position.x + w / 2;
@@ -278,75 +514,848 @@ function CanvasChatInner() {
     });
     const centroidX = centroidSumX / allNodes.length;
     const centroidY = centroidSumY / allNodes.length;
-    const { centerX, centerY } = getContainerCenter();
+    const { centerX, centerY } = canvasWrapperCenter();
     setViewport(
       { x: centerX - centroidX, y: centerY - centroidY, zoom: 1 },
-      { duration: 500 },
+      { duration: VIEWPORT_ANIMATION_MS },
     );
-  }, [getNodes, getNodeDims, getContainerCenter, setViewport]);
+  }, [getNodes, getNodeDims, canvasWrapperCenter, setViewport]);
+
+  const zoomToSelection = useCallback(() => {
+    const selectedNodes = nodesRef.current.filter((node) => node.selected);
+    if (selectedNodes.length === 0) return;
+    void fitView({
+      nodes: selectedNodes.map((node) => ({ id: node.id })),
+      padding: FIT_SELECTION_PADDING,
+      maxZoom: FIT_SELECTION_MAX_ZOOM,
+      duration: VIEWPORT_ANIMATION_MS,
+    });
+  }, [fitView]);
 
   const resetZoomKeepingCenter = useCallback(() => {
-    const { centerX, centerY } = getContainerCenter();
-    const viewport = getViewport();
+    const { centerX, centerY } = canvasWrapperCenter();
+    const current = getViewport();
     setViewport(
       {
-        x: centerX - (centerX - viewport.x) / viewport.zoom,
-        y: centerY - (centerY - viewport.y) / viewport.zoom,
+        x: centerX - (centerX - current.x) / current.zoom,
+        y: centerY - (centerY - current.y) / current.zoom,
         zoom: 1,
       },
-      { duration: 300 },
+      { duration: ZOOM_ANIMATION_MS },
     );
-  }, [getContainerCenter, getViewport, setViewport]);
+  }, [canvasWrapperCenter, getViewport, setViewport]);
 
-  // ── Keyboard: zoom shortcuts + Tab-to-toggle-mode + hold-Space-to-pan + Delete ──
-  useEffect(() => {
-    const isTyping = (target: EventTarget | null) =>
-      target instanceof HTMLInputElement ||
-      target instanceof HTMLTextAreaElement;
+  // ── Selection, editing, and the element operations ─────────────
+  const selectOnly = useCallback((ids: ReadonlySet<string>) => {
+    setNodes((previous) =>
+      previous.map((node) => {
+        const shouldSelect = ids.has(node.id);
+        return !!node.selected === shouldSelect ? node : ({ ...node, selected: shouldSelect } as CanvasNode);
+      }),
+    );
+  }, []);
 
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setModal(null);
+  const startEditing = useCallback(
+    (nodeId: string) => {
+      setEditingId(nodeId);
+      selectOnly(new Set([nodeId]));
+    },
+    [selectOnly],
+  );
+
+  // Excalidraw-style: a text element left empty when editing ends is removed.
+  const stopEditing = useCallback(() => {
+    const finishedId = editingId;
+    setEditingId(null);
+    if (!finishedId) return;
+    setNodes((previous) =>
+      previous.filter(
+        (node) => !(node.id === finishedId && node.type === "textElement" && node.data.text.trim() === ""),
+      ),
+    );
+  }, [editingId]);
+
+  const insertNodes = useCallback((newNodes: CanvasNode[]) => {
+    if (newNodes.length === 0) return;
+    setNodes((previous) => {
+      let zIndex = getNextZIndex(previous);
+      return [
+        ...deselectAll(previous),
+        ...newNodes.map((node) => ({ ...node, selected: true, zIndex: zIndex++ }) as CanvasNode),
+      ];
+    });
+  }, []);
+
+  const deleteSelection = useCallback(() => {
+    setEditingId(null);
+    setNodes((previous) => {
+      const deletedIds = new Set(previous.filter((node) => node.selected).map((node) => node.id));
+      if (deletedIds.size === 0) return previous;
+      const detached = detachLineBindings(
+        previous,
+        (line, binding) => deletedIds.has(binding.elementId) && !deletedIds.has(line.id),
+      );
+      return detached.filter((node) => !deletedIds.has(node.id));
+    });
+  }, []);
+
+  const duplicateSelection = useCallback(() => {
+    const selectedNodes = resolveLineBindings(nodesRef.current).filter((node) => node.selected);
+    insertNodes(cloneNodes(selectedNodes, { x: DUPLICATE_OFFSET, y: DUPLICATE_OFFSET }));
+  }, [insertNodes]);
+
+  const selectAll = useCallback(() => {
+    setNodes((previous) =>
+      previous.map((node) => (node.selected ? node : ({ ...node, selected: true } as CanvasNode))),
+    );
+  }, []);
+
+  // Moving lines away from targets that aren't moving with them unbinds
+  // those ends (the same rule Excalidraw uses); targets moving along keep
+  // dragging their lines with them.
+  const detachLinesMovedApart = useCallback((movedIds: ReadonlySet<string>) => {
+    setNodes((previous) =>
+      detachLineBindings(previous, (line, binding) => movedIds.has(line.id) && !movedIds.has(binding.elementId)),
+    );
+  }, []);
+
+  const nudgeSelection = useCallback(
+    (deltaX: number, deltaY: number) => {
+      const selectedIds = new Set(nodesRef.current.filter((node) => node.selected).map((node) => node.id));
+      if (selectedIds.size === 0) return;
+      detachLinesMovedApart(selectedIds);
+      setNodes((previous) =>
+        previous.map((node) =>
+          selectedIds.has(node.id)
+            ? ({ ...node, position: { x: node.position.x + deltaX, y: node.position.y + deltaY } } as CanvasNode)
+            : node,
+        ),
+      );
+    },
+    [detachLinesMovedApart],
+  );
+
+  const changeLayer = useCallback((direction: LayerDirection) => {
+    setNodes((previous) => reorderLayers(previous, direction));
+  }, []);
+
+  // Applies to every selected element that has the property, and becomes
+  // the default for elements drawn next — same as Excalidraw.
+  const updateStyle = useCallback((patch: Partial<ElementStyle>) => {
+    setCurrentStyle((style) => ({ ...style, ...patch }));
+    setNodes((previous) =>
+      previous.map((node) => {
+        if (!node.selected || node.type === "conversation") return node;
+        const applicableEntries = Object.entries(patch).filter(([key]) => key in node.data);
+        if (applicableEntries.length === 0) return node;
+        return { ...node, data: { ...node.data, ...Object.fromEntries(applicableEntries) } } as CanvasNode;
+      }),
+    );
+  }, []);
+
+  const updateCardColorForSelection = useCallback((color: string) => {
+    setNodes((previous) =>
+      previous.map((node) =>
+        node.selected && node.type === "conversation" ? { ...node, data: { ...node.data, color } } : node,
+      ),
+    );
+  }, []);
+
+  const updateNodeData = useCallback(
+    <NodeType extends CanvasNode>(id: string, type: NodeType["type"], patch: (node: NodeType) => Partial<NodeType>) =>
+      setNodes((previous) =>
+        previous.map((node) => (node.id === id && node.type === type ? ({ ...node, ...patch(node as NodeType) } as CanvasNode) : node)),
+      ),
+    [],
+  );
+
+  const resizeTextElement = useCallback(
+    (id: string, width: number, x: number, y: number, handleKind: ResizeHandleKind) =>
+      updateNodeData<TextElementNode>(id, "textElement", (node) => {
+        // Corners scale the font along with the box — "make the text
+        // bigger/smaller"; edges only rewrap at the same size.
+        const fontSize =
+          handleKind === "corner" && node.data.width > 0
+            ? Math.min(MAX_FONT_SIZE, Math.max(MIN_FONT_SIZE, Math.round(node.data.fontSize * (width / node.data.width))))
+            : node.data.fontSize;
+        return { position: { x, y }, data: { ...node.data, width, fontSize } };
+      }),
+    [updateNodeData],
+  );
+
+  // ── Snapping/binding radius in flow units for the current zoom ──
+  const getSnapRadius = useCallback(() => SNAP_RADIUS_PX / getViewport().zoom, [getViewport]);
+
+  // ── Element factories ──────────────────────────────────────────
+  const createTextAt = useCallback(
+    (point: Point, initialText = "") => {
+      const style = pickStyle(currentStyle, TEXT_STYLE_KEYS);
+      const textNode: TextElementNode = {
+        id: crypto.randomUUID(),
+        type: "textElement",
+        position: { x: point.x, y: point.y - style.fontSize / 2 },
+        data: { text: initialText, width: TEXT_DEFAULT_WIDTH, ...style },
+      };
+      insertNodes([textNode]);
+      if (!initialText) setEditingId(textNode.id);
+    },
+    [currentStyle, insertNodes],
+  );
+
+  const createLine = useCallback(
+    (kind: LineKind, start: Point, end: Point, startBinding: Binding | null, endBinding: Binding | null) => {
+      const { position, points } = getLineGeometry(start, end);
+      const lineNode: LineElementNode = {
+        id: crypto.randomUUID(),
+        type: "lineElement",
+        position,
+        data: {
+          kind,
+          points,
+          seed: createSeed(),
+          startBinding,
+          endBinding,
+          ...pickStyle(currentStyle, LINE_STYLE_KEYS),
+        },
+      };
+      insertNodes([lineNode]);
+    },
+    [currentStyle, insertNodes],
+  );
+
+  const createShape = useCallback(
+    (shapeKind: ShapeKind, start: Point, end: Point, isClick: boolean) => {
+      const width = isClick ? SHAPE_DEFAULT_SIZE : Math.max(Math.abs(end.x - start.x), SHAPE_MIN_DRAG_SIZE);
+      const height = isClick ? SHAPE_DEFAULT_SIZE : Math.max(Math.abs(end.y - start.y), SHAPE_MIN_DRAG_SIZE);
+      const shapeNode: ShapeElementNode = {
+        id: crypto.randomUUID(),
+        type: "shapeElement",
+        position: {
+          x: isClick ? start.x - width / 2 : Math.min(start.x, end.x),
+          y: isClick ? start.y - height / 2 : Math.min(start.y, end.y),
+        },
+        data: {
+          shapeKind,
+          width,
+          height,
+          seed: createSeed(),
+          label: "",
+          ...pickStyle(currentStyle, SHAPE_STYLE_KEYS),
+        },
+      };
+      insertNodes([shapeNode]);
+    },
+    [currentStyle, insertNodes],
+  );
+
+  const insertImageFiles = useCallback(
+    async (files: File[], at: Point) => {
+      const imageFiles = files.filter(isImageFile);
+      if (imageFiles.length === 0) {
+        if (files.length > 0) notify("Only image files can be added to the canvas.", "error");
         return;
       }
-
-      // Delete/Backspace — remove selected canvas elements (text/shape/line,
-      // never chat nodes) and selected anchor connectors.
-      if (
-        (event.key === "Delete" || event.key === "Backspace") &&
-        !isTyping(event.target)
-      ) {
-        const deletableIds = nodesRef.current
-          .filter((node) => node.selected && node.type !== "conversation")
-          .map((node) => node.id);
-        const selectedAnchorEdgeIds = linkEdgesRef.current
-          .filter((edge) => edge.selected)
-          .map((edge) => edge.id);
-        if (deletableIds.length > 0 || selectedAnchorEdgeIds.length > 0) {
-          event.preventDefault();
-          if (deletableIds.length > 0) {
-            setNodes((prev) =>
-              prev.filter((node) => !deletableIds.includes(node.id)),
-            );
-          }
-          if (selectedAnchorEdgeIds.length > 0) {
-            setLinkEdges((prev) =>
-              prev.filter((edge) => !selectedAnchorEdgeIds.includes(edge.id)),
-            );
-          }
+      const imageNodes: ImageElementNode[] = [];
+      for (const [index, file] of imageFiles.entries()) {
+        try {
+          const image = await loadImageFile(file);
+          const scale = Math.min(1, IMAGE_MAX_INITIAL_SIZE / Math.max(image.width, image.height));
+          const width = image.width * scale;
+          const height = image.height * scale;
+          const offset = index * IMAGE_STACK_OFFSET;
+          imageNodes.push({
+            id: crypto.randomUUID(),
+            type: "imageElement",
+            position: { x: at.x - width / 2 + offset, y: at.y - height / 2 + offset },
+            data: { src: image.src, width, height, ...pickStyle(currentStyle, IMAGE_STYLE_KEYS) },
+          });
+        } catch (error) {
+          notify(errorMessage(error), "error");
         }
+      }
+      insertNodes(imageNodes);
+      if (imageNodes.length > 0) setMode("select");
+    },
+    [currentStyle, insertNodes, notify, setMode],
+  );
+
+  const getPastePosition = useCallback(
+    () => lastPointerFlowPositionRef.current ?? getViewportCenterFlowPosition(),
+    [getViewportCenterFlowPosition],
+  );
+
+  const promptForImages = useCallback(async () => {
+    const files = await pickFiles({ accept: "image/*", multiple: true });
+    if (files.length > 0) await insertImageFiles(files, getViewportCenterFlowPosition());
+  }, [getViewportCenterFlowPosition, insertImageFiles]);
+
+  // ── xyflow-driven node changes: position (drag), measured size, selection ──
+  const onNodesChange = useCallback((changes: NodeChange<CanvasNode>[]) => {
+    // Element sizes come from `data`; letting the resizer also pin xyflow's
+    // own width/height would freeze intrinsic sizes (e.g. text height).
+    const sanitizedChanges = changes.map((change) =>
+      change.type === "dimensions" && change.setAttributes ? { ...change, setAttributes: false } : change,
+    );
+    setNodes((previous) => applyNodeChanges(sanitizedChanges, previous));
+  }, []);
+
+  const onNodeDragStart = useCallback(
+    (_event: unknown, _node: Node, draggedNodes: Node[]) => {
+      detachLinesMovedApart(new Set(draggedNodes.map((node) => node.id)));
+    },
+    [detachLinesMovedApart],
+  );
+  const onSelectionDragStart = useCallback(
+    (_event: unknown, draggedNodes: Node[]) => {
+      detachLinesMovedApart(new Set(draggedNodes.map((node) => node.id)));
+    },
+    [detachLinesMovedApart],
+  );
+
+  // Chat nodes connect to each other only through branching (the separate
+  // branchSource/branchTarget handles), never through drawn arrows.
+  const isValidConnection = useCallback(
+    (connection: Connection | BranchEdge) => {
+      const { sourceHandle, targetHandle } = connection;
+      if (typeof sourceHandle !== "string" || !sourceHandle.startsWith(ANCHOR_HANDLE_PREFIX)) return false;
+      if (typeof targetHandle !== "string" || !targetHandle.startsWith(ANCHOR_HANDLE_PREFIX)) return false;
+      if (connection.source === connection.target) return false;
+      const sourceType = getNode(connection.source)?.type;
+      const targetType = getNode(connection.target)?.type;
+      return !(sourceType === "conversation" && targetType === "conversation");
+    },
+    [getNode],
+  );
+
+  // Dragging between two anchor handles draws an arrow bound at both ends.
+  const onConnect = useCallback(
+    (connection: Connection) => {
+      const sourceNode = nodesRef.current.find((node) => node.id === connection.source);
+      const targetNode = nodesRef.current.find((node) => node.id === connection.target);
+      const sourceSide = connection.sourceHandle?.slice(ANCHOR_HANDLE_PREFIX.length) as AnchorSide | undefined;
+      const targetSide = connection.targetHandle?.slice(ANCHOR_HANDLE_PREFIX.length) as AnchorSide | undefined;
+      if (!sourceNode || !targetNode || !sourceSide || !targetSide) return;
+      if (!(sourceSide in ANCHOR_FOCUS) || !(targetSide in ANCHOR_FOCUS)) return;
+      const startFocus = ANCHOR_FOCUS[sourceSide];
+      const endFocus = ANCHOR_FOCUS[targetSide];
+      createLine(
+        "arrow",
+        pointFromFocus(getNodeBox(sourceNode), startFocus),
+        pointFromFocus(getNodeBox(targetNode), endFocus),
+        { elementId: sourceNode.id, focus: { ...startFocus } },
+        { elementId: targetNode.id, focus: { ...endFocus } },
+      );
+    },
+    [createLine],
+  );
+
+  const moveLineEndpoint = useCallback(
+    (lineId: string, endpointIndex: 0 | 1, flowPoint: Point) => {
+      const currentNodes = nodesRef.current;
+      const line = resolveLineBindings(currentNodes).find(
+        (node): node is LineElementNode => node.id === lineId && node.type === "lineElement",
+      );
+      if (!line) return;
+      const otherBinding = endpointIndex === 0 ? line.data.endBinding : line.data.startBinding;
+      const excludedIds = new Set([lineId, ...(otherBinding ? [otherBinding.elementId] : [])]);
+      const candidate = findBindingAt(flowPoint, currentNodes, excludedIds, getSnapRadius());
+      setBindingTargetId(candidate?.binding.elementId ?? null);
+      const endpoints = getLineEndpoints(line);
+      endpoints[endpointIndex] = candidate?.point ?? flowPoint;
+      const { position, points } = getLineGeometry(endpoints[0], endpoints[1]);
+      const binding = candidate?.binding ?? null;
+      updateNodeData<LineElementNode>(lineId, "lineElement", (node) => ({
+        position,
+        data: {
+          ...node.data,
+          points,
+          ...(endpointIndex === 0 ? { startBinding: binding } : { endBinding: binding }),
+        },
+      }));
+    },
+    [getSnapRadius, updateNodeData],
+  );
+
+  const onPaneClick = useCallback(
+    (event: ReactMouseEvent) => {
+      if (mode === "text") {
+        const point = screenToFlowPosition({ x: event.clientX, y: event.clientY });
+        const textUnderPointer = sortTopmostFirst(nodesRef.current).find((node) => {
+          if (node.type !== "textElement") return false;
+          const box = getNodeBox(node);
+          return point.x >= box.x && point.x <= box.x + box.width && point.y >= box.y && point.y <= box.y + box.height;
+        });
+        const target = textUnderPointer ?? findTopmostShapeAt(point, nodesRef.current);
+        if (target) startEditing(target.id);
+        else createTextAt(point);
+        finishCreation();
         return;
       }
+      setNodes((previous) => deselectAll(previous));
+    },
+    [mode, screenToFlowPosition, startEditing, createTextAt, finishCreation],
+  );
 
-      // Tab — toggle the persistent select/pan tool; skip if user is typing in a form field
-      if (event.code === "Tab" && !event.repeat && !isTyping(event.target)) {
+  // Double-clicking empty canvas adds text there; inside a shape (even a
+  // transparent one, whose interior is click-through) it edits the label.
+  const onCanvasDoubleClick = useCallback(
+    (event: ReactMouseEvent) => {
+      if (effectiveMode !== "select") return;
+      if ((event.target as Element).closest(".react-flow__node")) return;
+      if (!(event.target as Element).closest(".react-flow__pane")) return;
+      const point = screenToFlowPosition({ x: event.clientX, y: event.clientY });
+      const shape = findTopmostShapeAt(point, nodesRef.current);
+      if (shape) startEditing(shape.id);
+      else createTextAt(point);
+    },
+    [effectiveMode, screenToFlowPosition, startEditing, createTextAt],
+  );
+
+  const onNodeDoubleClick = useCallback(
+    (_event: ReactMouseEvent, node: Node) => {
+      if (node.type === "shapeElement" || node.type === "textElement") startEditing(node.id);
+    },
+    [startEditing],
+  );
+
+  // ── Drag-to-draw gesture — shape/line/arrow tools commit on drag ──
+  const [drawPreview, setDrawPreview] = useState<DrawPreview | null>(null);
+
+  useEffect(() => {
+    const wrapper = canvasWrapperRef.current;
+    if (!wrapper || !isDragMode) return;
+    const drawKind = effectiveMode as DragDrawMode;
+    const isLineKind = drawKind === "line" || drawKind === "arrow";
+
+    const onMouseDown = (event: MouseEvent) => {
+      if (event.button !== 0) return;
+      if (!(event.target as Element).closest(".react-flow__pane, .react-flow__node")) return;
+      const snapRadius = getSnapRadius();
+      const startRaw = screenToFlowPosition({ x: event.clientX, y: event.clientY });
+      const startCandidate: BindingCandidate | null = isLineKind
+        ? findBindingAt(startRaw, nodesRef.current, EMPTY_ID_SET, snapRadius)
+        : null;
+      const start = startCandidate?.point ?? startRaw;
+      let endCandidate: BindingCandidate | null = null;
+      const startClient = { x: event.clientX, y: event.clientY };
+
+      setDrawPreview({ kind: drawKind, start, end: start });
+      setBindingTargetId(startCandidate?.binding.elementId ?? null);
+
+      const computeEnd = (pointerEvent: MouseEvent): Point => {
+        let raw = screenToFlowPosition({ x: pointerEvent.clientX, y: pointerEvent.clientY });
+        if (isLineKind) {
+          if (pointerEvent.shiftKey) raw = snapAngle(start, raw);
+          const excludedIds = startCandidate ? new Set([startCandidate.binding.elementId]) : EMPTY_ID_SET;
+          endCandidate = findBindingAt(raw, nodesRef.current, excludedIds, snapRadius);
+          return endCandidate?.point ?? raw;
+        }
+        if (pointerEvent.shiftKey) {
+          const size = Math.max(Math.abs(raw.x - start.x), Math.abs(raw.y - start.y));
+          raw = { x: start.x + Math.sign(raw.x - start.x || 1) * size, y: start.y + Math.sign(raw.y - start.y || 1) * size };
+        }
+        return raw;
+      };
+
+      const onMouseMove = (moveEvent: MouseEvent) => {
+        const end = computeEnd(moveEvent);
+        setDrawPreview((previous) => (previous ? { ...previous, end } : previous));
+        setBindingTargetId(endCandidate?.binding.elementId ?? null);
+      };
+      const onMouseUp = (upEvent: MouseEvent) => {
+        window.removeEventListener("mousemove", onMouseMove);
+        window.removeEventListener("mouseup", onMouseUp);
+        setDrawPreview(null);
+        setBindingTargetId(null);
+
+        const end = computeEnd(upEvent);
+        const isClick =
+          Math.abs(upEvent.clientX - startClient.x) < DRAG_COMMIT_THRESHOLD_PX &&
+          Math.abs(upEvent.clientY - startClient.y) < DRAG_COMMIT_THRESHOLD_PX;
+
+        if (isLineKind) {
+          if (!isClick) createLine(drawKind, start, end, startCandidate?.binding ?? null, endCandidate?.binding ?? null);
+        } else {
+          createShape(SHAPE_KIND_BY_MODE[drawKind]!, start, end, isClick);
+        }
+        finishCreation();
+      };
+
+      window.addEventListener("mousemove", onMouseMove);
+      window.addEventListener("mouseup", onMouseUp);
+    };
+
+    wrapper.addEventListener("mousedown", onMouseDown);
+    return () => wrapper.removeEventListener("mousedown", onMouseDown);
+  }, [isDragMode, effectiveMode, screenToFlowPosition, getSnapRadius, createLine, createShape, finishCreation]);
+
+  // ── Add a chat node + call the AI ───────────────────────────────
+  //
+  // Branching is the only way conversation nodes ever connect. `activeNodeId`
+  // carries the just-created node forward automatically so simply continuing
+  // to type keeps branching from — and flowing straight down from — whatever
+  // you last sent. Explicitly clicking "Branch" on an older node (or clearing
+  // the active node) is what redirects or detaches that default.
+  const findFreeSpot = useCallback(
+    (x: number, y: number, w: number, h: number) => {
+      let nextY = y;
+      for (let tries = 0; tries < FREE_SPOT_MAX_TRIES; tries++) {
+        const collides = nodesRef.current.some((node) => {
+          if (node.type !== "conversation") return false;
+          const { w: nodeW, h: nodeH } = getNodeDims(node.id);
+          return (
+            x < node.position.x + nodeW + FREE_SPOT_GAP &&
+            x + w + FREE_SPOT_GAP > node.position.x &&
+            nextY < node.position.y + nodeH + FREE_SPOT_GAP &&
+            nextY + h + FREE_SPOT_GAP > node.position.y
+          );
+        });
+        if (!collides) break;
+        nextY += NODE_H_EST + FREE_SPOT_GAP;
+      }
+      return { x, y: nextY };
+    },
+    [getNodeDims],
+  );
+
+  const addConversationNode = async (prompt: string) => {
+    const nodeId = crypto.randomUUID();
+    const conversationNodes = nodesRef.current.filter(
+      (node): node is ConversationNodeState => node.type === "conversation",
+    );
+    const lastConversationNode = conversationNodes[conversationNodes.length - 1];
+    const branchParentNode = activeNodeId
+      ? conversationNodes.find((node) => node.id === activeNodeId)
+      : undefined;
+
+    let x: number, y: number;
+    if (branchParentNode && branchParentNode.id !== lastConversationNode?.id) {
+      // Explicit fork off an earlier node — branch out to the side.
+      const { w: parentW } = getNodeDims(branchParentNode.id);
+      const siblingCount = conversationNodes.filter(
+        (node) => node.data.branchParentId === branchParentNode.id,
+      ).length;
+      x = branchParentNode.position.x + parentW + BRANCH_GAP;
+      y = branchParentNode.position.y + siblingCount * (NODE_H_EST + FREE_SPOT_GAP);
+    } else if (branchParentNode) {
+      // Continuing straight from the most recent node — keep flowing downward.
+      const { h: parentH } = getNodeDims(branchParentNode.id);
+      x = branchParentNode.position.x;
+      y = branchParentNode.position.y + parentH + BRANCH_GAP;
+    } else {
+      // No active thread — a fresh, untethered conversation.
+      const center = getViewportCenterFlowPosition();
+      x = center.x - NODE_W / 2;
+      y = center.y - NODE_H_EST / 2;
+    }
+    ({ x, y } = findFreeSpot(x, y, NODE_W, NODE_H_EST));
+
+    insertNodes([
+      {
+        id: nodeId,
+        type: "conversation",
+        position: { x, y },
+        data: {
+          prompt,
+          response: "",
+          loading: true,
+          minimized: false,
+          color: branchParentNode?.data.color ?? DEFAULT_COLOR,
+          branchParentId: branchParentNode?.id ?? null,
+          width: branchParentNode?.data.width ?? NODE_W,
+          height: branchParentNode?.data.height ?? CONVERSATION_DEFAULT_HEIGHT,
+        },
+      },
+    ]);
+    setActiveNodeId(nodeId);
+    centerOn(x, y);
+
+    const requestProjectId = projects.currentProjectIdRef.current;
+    inFlightRequestIdsRef.current.add(nodeId);
+    let response: string;
+    try {
+      response = await simulateAI(
+        prompt,
+        branchParentNode?.data.prompt,
+        branchParentNode?.data.response,
+        projects.currentProject?.workingFolder,
+      );
+    } catch (error) {
+      response = `⚠ ${errorMessage(error)}`;
+    }
+    inFlightRequestIdsRef.current.delete(nodeId);
+
+    const applyResponse = (node: CanvasNode): CanvasNode["data"] =>
+      node.type === "conversation" ? { ...node.data, response, loading: false } : node.data;
+    if (requestProjectId === projects.currentProjectIdRef.current) {
+      history.patchNodeEverywhere(nodeId, applyResponse);
+    } else if (requestProjectId) {
+      void projects.updateStoredNode(requestProjectId, nodeId, applyResponse);
+    }
+  };
+
+  // A deleted (or undone) active node can't be branched from any more.
+  useEffect(() => {
+    if (activeNodeId && !nodes.some((node) => node.id === activeNodeId)) setActiveNodeId(null);
+  }, [nodes, activeNodeId]);
+
+  useEffect(() => {
+    if (editingId && !nodes.some((node) => node.id === editingId)) setEditingId(null);
+  }, [nodes, editingId]);
+
+  // ── File operations ───────────────────────────────────────────
+  const projectTitle = projects.currentProject?.title ?? DEFAULT_PROJECT_TITLE;
+
+  const saveToFile = useCallback(async () => {
+    try {
+      const document = createCanvasDocument(resolveLineBindings(nodesRef.current), getViewport());
+      const didSave = await saveFile({
+        suggestedName: `${projectTitle}.${CANVAS_FILE_EXTENSION}`,
+        filter: CANVAS_FILE_FILTER,
+        contents: JSON.stringify(document, null, 2),
+      });
+      if (didSave) notify("Saved to file");
+    } catch (error) {
+      notify(`Couldn't save the file: ${errorMessage(error)}`, "error");
+    }
+  }, [getViewport, notify, projectTitle]);
+
+  const loadFromFile = useCallback(async () => {
+    try {
+      const file = await openTextFile(CANVAS_FILE_FILTER);
+      if (!file) return;
+      const document = parseCanvasDocument(JSON.parse(file.contents));
+      setEditingId(null);
+      setActiveNodeId(null);
+      setNodes(document.nodes);
+      if (document.viewport) setViewport(document.viewport);
+      notify(`Opened ${file.name} — Ctrl+Z to go back`);
+    } catch (error) {
+      notify(`Couldn't open the file: ${errorMessage(error)}`, "error");
+    }
+  }, [notify, setViewport]);
+
+  const requestOpenFile = useCallback(() => {
+    if (nodesRef.current.length === 0) {
+      void loadFromFile();
+      return;
+    }
+    setConfirmRequest({
+      title: "Open file",
+      message: "Opening a file replaces everything on this canvas. You can undo it afterwards with Ctrl+Z.",
+      confirmLabel: "Open file",
+      onConfirm: () => void loadFromFile(),
+    });
+  }, [loadFromFile]);
+
+  const requestClearCanvas = useCallback(() => {
+    if (nodesRef.current.length === 0) return;
+    setConfirmRequest({
+      title: "Clear canvas",
+      message: "Remove every element and chat from this canvas? You can undo it afterwards with Ctrl+Z.",
+      confirmLabel: "Clear canvas",
+      onConfirm: () => {
+        setEditingId(null);
+        setNodes([]);
+      },
+    });
+  }, []);
+
+  const requestDeleteProject = useCallback(
+    (projectId: string) => {
+      const project = projects.projects.find((candidate) => candidate.id === projectId);
+      if (!project) return;
+      setConfirmRequest({
+        title: "Delete project",
+        message: `Delete “${project.title}” and its canvas? This can't be undone.`,
+        confirmLabel: "Delete project",
+        onConfirm: () => void projects.deleteProject(projectId),
+      });
+    },
+    [projects],
+  );
+
+  // Branch edges are part of the export only when both of their chat nodes are.
+  const branchEdges = useMemo<BranchEdge[]>(() => {
+    const existingIds = new Set(nodes.map((node) => node.id));
+    return nodes.flatMap((node): BranchEdge[] =>
+      node.type === "conversation" && node.data.branchParentId && existingIds.has(node.data.branchParentId)
+        ? [
+            {
+              id: `branch-${node.id}`,
+              type: "branch",
+              source: node.data.branchParentId,
+              sourceHandle: "branchSource",
+              target: node.id,
+              targetHandle: "branchTarget",
+              selectable: false,
+              deletable: false,
+              data: {},
+            },
+          ]
+        : [],
+    );
+  }, [nodes]);
+
+  const exportImage = useCallback(
+    async (settings: ExportSettings) => {
+      const viewportElement = canvasWrapperRef.current?.querySelector<HTMLElement>(".react-flow__viewport");
+      const allNodes = resolveLineBindings(nodesRef.current);
+      const exportedNodes = settings.isSelectionOnly ? allNodes.filter((node) => node.selected) : allNodes;
+      const bounds: Box | null = getBoxesBounds(exportedNodes.map(getNodeBox));
+      if (!viewportElement || !bounds) {
+        notify("There's nothing to export yet.", "error");
+        return;
+      }
+      const exportedIds = new Set(exportedNodes.map((node) => node.id));
+      const exportedEdgeIds = new Set(
+        branchEdges
+          .filter((edge) => exportedIds.has(edge.source) && exportedIds.has(edge.target))
+          .map((edge) => edge.id),
+      );
+      const previouslySelectedIds = new Set(allNodes.filter((node) => node.selected).map((node) => node.id));
+
+      setIsExporting(true);
+      setEditingId(null);
+      setNodes((previous) => deselectAll(previous));
+      await waitForFrames(2);
+      try {
+        const backgroundColor = settings.hasBackground && themeRootRef.current
+          ? getComputedStyle(themeRootRef.current).getPropertyValue("--color-surface").trim()
+          : null;
+        const contents = await renderCanvasImage({
+          viewportElement,
+          bounds,
+          format: settings.format,
+          backgroundColor,
+          pixelRatio: settings.scale,
+          includeElement: (element) => {
+            if (element.classList.contains("react-flow__handle")) return false;
+            if (element.classList.contains("react-flow__resize-control")) return false;
+            if (element.classList.contains("react-flow__node")) return exportedIds.has(element.getAttribute("data-id") ?? "");
+            if (element.classList.contains("react-flow__edge")) return exportedEdgeIds.has(element.getAttribute("data-id") ?? "");
+            const labelEdgeId = element.getAttribute("data-edge-id");
+            return labelEdgeId === null || exportedEdgeIds.has(labelEdgeId);
+          },
+        });
+        const didSave = await saveFile({
+          suggestedName: `${projectTitle}.${settings.format}`,
+          filter: EXPORT_FILE_FILTERS[settings.format],
+          contents,
+        });
+        if (didSave) {
+          setIsExportOpen(false);
+          notify(`Exported ${settings.format.toUpperCase()}`);
+        }
+      } catch (error) {
+        notify(`Export failed: ${errorMessage(error)}`, "error");
+      } finally {
+        setNodes((previous) =>
+          previous.map((node) =>
+            previouslySelectedIds.has(node.id) ? ({ ...node, selected: true } as CanvasNode) : node,
+          ),
+        );
+        setIsExporting(false);
+      }
+    },
+    [branchEdges, notify, projectTitle],
+  );
+
+  const isAnyDialogOpen = modal !== null || confirmRequest !== null || isExportOpen || isShortcutsOpen;
+
+  // ── Keyboard shortcuts ─────────────────────────────────────────
+  // Handlers read the latest closures through a ref so the window
+  // listeners are registered once rather than on every render.
+  const keyDownHandlerRef = useRef<(event: KeyboardEvent) => void>(() => {});
+  const keyUpHandlerRef = useRef<(event: KeyboardEvent) => void>(() => {});
+  useEffect(() => {
+    keyDownHandlerRef.current = (event: KeyboardEvent) => {
+      if (isAnyDialogOpen) {
+        if (event.key === "Escape") setModal(null);
+        return;
+      }
+      if (isEditableTarget(event.target)) return;
+
+      const isModifierPressed = event.ctrlKey || event.metaKey;
+      const key = event.key.toLowerCase();
+      const hasSelection = nodesRef.current.some((node) => node.selected);
+
+      if (isModifierPressed) {
+        const handled = (() => {
+          if (key === "z" && !event.shiftKey) return history.undo(), true;
+          if ((key === "z" && event.shiftKey) || key === "y") return history.redo(), true;
+          if (key === "a") return selectAll(), true;
+          if (key === "d") return duplicateSelection(), true;
+          if (key === "s") return void saveToFile(), true;
+          if (key === "o") return requestOpenFile(), true;
+          if (key === "e" && event.shiftKey) return setIsExportOpen(true), true;
+          if (event.code === "BracketRight") return changeLayer(event.shiftKey ? "front" : "forward"), true;
+          if (event.code === "BracketLeft") return changeLayer(event.shiftKey ? "back" : "backward"), true;
+          if (key === "=" || key === "+") return zoomIn({ duration: ZOOM_ANIMATION_MS }), true;
+          if (key === "-") return zoomOut({ duration: ZOOM_ANIMATION_MS }), true;
+          if (key === "0") return resetZoomKeepingCenter(), true;
+          return false;
+        })();
+        if (handled) event.preventDefault();
+        return;
+      }
+      if (event.altKey) return;
+
+      switch (event.key) {
+        case "Escape":
+          if (modeRef.current !== "select") setMode("select");
+          else setNodes((previous) => deselectAll(previous));
+          return;
+        case "Delete":
+        case "Backspace":
+          if (hasSelection) {
+            event.preventDefault();
+            deleteSelection();
+          }
+          return;
+        case "Enter": {
+          const selectedNodes = nodesRef.current.filter((node) => node.selected);
+          const [onlySelected] = selectedNodes;
+          if (selectedNodes.length === 1 && (onlySelected.type === "shapeElement" || onlySelected.type === "textElement")) {
+            event.preventDefault();
+            startEditing(onlySelected.id);
+          }
+          return;
+        }
+        case "ArrowUp":
+        case "ArrowDown":
+        case "ArrowLeft":
+        case "ArrowRight": {
+          if (!hasSelection || (event.target instanceof HTMLInputElement && event.target.type === "range")) return;
+          event.preventDefault();
+          const step = event.shiftKey ? NUDGE_STEP_LARGE : NUDGE_STEP;
+          const deltaX = event.key === "ArrowLeft" ? -step : event.key === "ArrowRight" ? step : 0;
+          const deltaY = event.key === "ArrowUp" ? -step : event.key === "ArrowDown" ? step : 0;
+          nudgeSelection(deltaX, deltaY);
+          return;
+        }
+        case "?":
+          setIsShortcutsOpen(true);
+          return;
+        case "!":
+          fitAll();
+          return;
+        case "@":
+          zoomToSelection();
+          return;
+      }
+
+      // Tab — toggle the persistent select/pan tool.
+      if (event.code === "Tab" && !event.repeat) {
         event.preventDefault();
-        toggleMode();
+        const nextMode = modeRef.current === "select" ? "pan" : "select";
+        setMode(nextMode);
+        announceMode(MODE_LABEL[nextMode]);
         return;
       }
 
-      // Space (held) — temporarily force pan mode; skip if user is typing in a form field
-      if (event.code === "Space" && !event.repeat && !isTyping(event.target)) {
+      // Space (held) — temporarily force pan mode.
+      if (event.code === "Space" && !event.repeat) {
         event.preventDefault();
         if (!spaceDownRef.current) {
           spaceDownRef.current = true;
@@ -356,835 +1365,410 @@ function CanvasChatInner() {
         return;
       }
 
-      if (!(event.ctrlKey || event.metaKey)) return;
-      if (event.key === "=" || event.key === "+") {
-        event.preventDefault();
-        zoomIn({ duration: 200 });
+      // Shift+1 / Shift+2 arrive as "!" / "@" on US layouts (handled above);
+      // `code` covers other layouts.
+      if (event.shiftKey && event.code === "Digit1") return fitAll();
+      if (event.shiftKey && event.code === "Digit2") return zoomToSelection();
+      if (event.shiftKey || event.repeat) return;
+
+      if (key === "q") {
+        setIsToolLocked((locked) => !locked);
+        return;
       }
-      if (event.key === "-") {
-        event.preventDefault();
-        zoomOut({ duration: 200 });
+      if (key === "9") {
+        void promptForImages();
+        return;
       }
-      if (event.key === "0") {
-        event.preventDefault();
-        resetZoomKeepingCenter();
-      }
+      const toolMode = TOOL_SHORTCUTS[key];
+      if (toolMode) setMode(toolMode);
     };
 
-    const onKeyUp = (event: KeyboardEvent) => {
+    keyUpHandlerRef.current = (event: KeyboardEvent) => {
       if (event.code === "Space" && spaceDownRef.current) {
         spaceDownRef.current = false;
         setIsSpaceDown(false);
         if (modeRef.current === "select") announceMode("Select mode");
       }
     };
+  });
 
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => keyDownHandlerRef.current(event);
+    const onKeyUp = (event: KeyboardEvent) => keyUpHandlerRef.current(event);
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("keyup", onKeyUp);
     return () => {
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("keyup", onKeyUp);
     };
-  }, [toggleMode, announceMode, zoomIn, zoomOut, resetZoomKeepingCenter]);
-
-  // ── xyflow-driven node/edge changes: position (drag), measured size, selection ──
-  const onNodesChange = useCallback((changes: NodeChange<CanvasNode>[]) => {
-    setNodes((prev) => applyNodeChanges(changes, prev));
   }, []);
 
-  const onEdgesChange = useCallback((changes: EdgeChange<CanvasEdge>[]) => {
-    // Branch edges are selectable:false/deletable:false, so xyflow never
-    // actually produces changes referencing them — this narrows the (purely
-    // static) CanvasEdge change type down to the AnchorEdge state it's
-    // applied to; a change for an id linkEdges doesn't contain is a no-op.
-    setLinkEdges((prev) => applyEdgeChanges(changes as EdgeChange<AnchorEdge>[], prev));
-  }, []);
-
-  // Any two anchorable elements may connect to each other — shape-to-shape,
-  // shape-to-chat-node, text-to-anything, etc. — from/to any of their 8
-  // anchor points, in either direction. The one thing this must never allow
-  // is chat-node-to-chat-node, since that's exclusively what the separate
-  // (invisible, non-interactive) branchSource/branchTarget handles and the
-  // derived branch edge are for — that path is untouched by any of this.
-  const isValidAnchorConnection = useCallback(
-    (connection: CanvasEdge | Connection) => {
-      const sourceHandle =
-        "sourceHandle" in connection ? connection.sourceHandle : undefined;
-      const targetHandle =
-        "targetHandle" in connection ? connection.targetHandle : undefined;
-      if (typeof sourceHandle !== "string" || !sourceHandle.startsWith("anchor-")) return false;
-      if (typeof targetHandle !== "string" || !targetHandle.startsWith("anchor-")) return false;
-      if (connection.source === connection.target) return false;
-      const sourceType = getNode(connection.source)?.type;
-      const targetType = getNode(connection.target)?.type;
-      if (sourceType === "conversation" && targetType === "conversation") return false;
-      return true;
-    },
-    [getNode],
-  );
-
-  const onConnect = useCallback((connection: Connection) => {
-    setLinkEdges((prev) =>
-      addEdge(
-        { ...connection, type: "anchor", selectable: true, deletable: true, data: {} },
-        prev,
-      ),
-    );
-  }, []);
-
-  // ── Shared data-field updaters ─────────────────────────────────
-  const updateColor = useCallback(
-    (id: string, color: string) =>
-      setNodes((prev) =>
-        prev.map((node) =>
-          node.id === id
-            ? ({ ...node, data: { ...node.data, color } } as CanvasNode)
-            : node,
-        ),
-      ),
-    [],
-  );
-
-  // Style panel operates over the whole selection at once, so a multi-select
-  // (e.g. two shapes) restyles together in one click.
-  const updateColorForSelection = useCallback((color: string) => {
-    setNodes((prev) =>
-      prev.map((node) =>
-        node.selected
-          ? ({ ...node, data: { ...node.data, color } } as CanvasNode)
-          : node,
-      ),
-    );
-  }, []);
-
-  const updateFontWeightForSelection = useCallback((fontWeight: FontWeight) => {
-    setNodes((prev) =>
-      prev.map((node) =>
-        node.selected && node.type === "textElement"
-          ? ({ ...node, data: { ...node.data, fontWeight } } as CanvasNode)
-          : node,
-      ),
-    );
-  }, []);
-
-  const updateStrokeStyleForSelection = useCallback((strokeStyle: StrokeStyle) => {
-    setNodes((prev) =>
-      prev.map((node) =>
-        node.selected && (node.type === "shapeElement" || node.type === "lineElement")
-          ? ({ ...node, data: { ...node.data, strokeStyle } } as CanvasNode)
-          : node,
-      ),
-    );
-  }, []);
-
-  // Layering — applies to every node type uniformly (chat/text/shape/line),
-  // via xyflow's own `zIndex` node field rather than anything in `data`.
-  // `elevateNodesOnSelect` is off on <ReactFlow> below specifically so this
-  // stays the only thing governing stacking — selecting or dragging a node
-  // never changes its layer. Two running bounds (rather than reading
-  // `Math.max`/`Math.min` off current nodes each click) keep the ordering
-  // exact even after nodes are deleted and re-added: a value once handed out
-  // is never reused, so "bring to front" always beats every z-index ever
-  // assigned, not just the ones currently on screen.
-  const zIndexBoundsRef = useRef({ max: 0, min: 0 });
-
-  const bringSelectionToFront = useCallback(() => {
-    setNodes((prev) => {
-      const selectedInOrder = prev.filter((node) => node.selected);
-      if (selectedInOrder.length === 0) return prev;
-      const start = zIndexBoundsRef.current.max + 1;
-      zIndexBoundsRef.current.max = start + selectedInOrder.length - 1;
-      const nextZIndexById = new Map(
-        selectedInOrder.map((node, index) => [node.id, start + index]),
-      );
-      return prev.map((node) =>
-        nextZIndexById.has(node.id) ? { ...node, zIndex: nextZIndexById.get(node.id) } : node,
-      );
-    });
-  }, []);
-
-  const sendSelectionToBack = useCallback(() => {
-    setNodes((prev) => {
-      const selectedInOrder = prev.filter((node) => node.selected);
-      if (selectedInOrder.length === 0) return prev;
-      const start = zIndexBoundsRef.current.min - selectedInOrder.length;
-      zIndexBoundsRef.current.min = start;
-      const nextZIndexById = new Map(
-        selectedInOrder.map((node, index) => [node.id, start + index]),
-      );
-      return prev.map((node) =>
-        nextZIndexById.has(node.id) ? { ...node, zIndex: nextZIndexById.get(node.id) } : node,
-      );
-    });
-  }, []);
-
-  const resizeShapeElement = useCallback(
-    (id: string, width: number, height: number, x: number, y: number) =>
-      setNodes((prev) =>
-        prev.map((node) =>
-          node.id === id && node.type === "shapeElement"
-            ? { ...node, position: { x, y }, data: { ...node.data, width, height } }
-            : node,
-        ),
-      ),
-    [],
-  );
-
-  const resizeTextElement = useCallback(
-    (id: string, width: number, height: number, x: number, y: number, handleKind: "corner" | "edge") =>
-      setNodes((prev) =>
-        prev.map((node) => {
-          if (node.id !== id || node.type !== "textElement") return node;
-          // Corners scale the font proportionally along with the box —
-          // "make the text bigger/smaller" — using width's growth ratio as
-          // the scale factor; edges only reflow/rewrap at the same size.
-          const fontSize =
-            handleKind === "corner" && node.data.width > 0
-              ? Math.max(TEXT_MIN_FONT_SIZE, Math.round(node.data.fontSize * (width / node.data.width)))
-              : node.data.fontSize;
-          return { ...node, position: { x, y }, data: { ...node.data, width, height, fontSize } };
-        }),
-      ),
-    [],
-  );
-
-  const resizeConversationNode = useCallback(
-    (id: string, width: number, height: number, x: number, y: number) =>
-      setNodes((prev) =>
-        prev.map((node) =>
-          node.id === id && node.type === "conversation"
-            ? { ...node, position: { x, y }, data: { ...node.data, width, height } }
-            : node,
-        ),
-      ),
-    [],
-  );
-
-  const updateLinePoints = useCallback(
-    (id: string, points: [Point, Point], position: Point) =>
-      setNodes((prev) =>
-        prev.map((node) =>
-          node.id === id && node.type === "lineElement"
-            ? { ...node, position, data: { ...node.data, points } }
-            : node,
-        ),
-      ),
-    [],
-  );
-
-  const toggleMinimize = useCallback(
-    (id: string) =>
-      setNodes((prev) =>
-        prev.map((node) =>
-          node.id === id && node.type === "conversation"
-            ? {
-                ...node,
-                data: { ...node.data, minimized: !node.data.minimized },
-              }
-            : node,
-        ),
-      ),
-    [],
-  );
-
-  const updateElementText = useCallback(
-    (id: string, text: string) =>
-      setNodes((prev) =>
-        prev.map((node) =>
-          node.id === id && node.type === "textElement"
-            ? { ...node, data: { ...node.data, text } }
-            : node,
-        ),
-      ),
-    [],
-  );
-
-  const deleteElement = useCallback(
-    (id: string) => setNodes((prev) => prev.filter((node) => node.id !== id)),
-    [],
-  );
-
-  // Nudges a candidate spot straight down, step by step, until its box (using
-  // each existing chat node's real measured size where known) no longer
-  // overlaps any existing chat node — so branch/chain placement never lands
-  // a fresh node on top of one that's already there. Only checks against
-  // other chat nodes, matching the original behavior of never dodging
-  // freeform text/shape/line elements.
-  const findFreeSpot = useCallback(
-    (x: number, y: number, w: number, h: number) => {
-      const GAP = 24;
-      let nextY = y;
-      for (let tries = 0; tries < 200; tries++) {
-        const collides = nodesRef.current.some((node) => {
-          if (node.type !== "conversation") return false;
-          const { w: nodeW, h: nodeH } = getNodeDims(node.id);
-          return (
-            x < node.position.x + nodeW + GAP &&
-            x + w + GAP > node.position.x &&
-            nextY < node.position.y + nodeH + GAP &&
-            nextY + h + GAP > node.position.y
-          );
-        });
-        if (!collides) break;
-        nextY += NODE_H_EST + GAP;
-      }
-      return { x, y: nextY };
-    },
-    [getNodeDims],
-  );
-
-  // ── Add a freeform text element (still single-click — text has no
-  // intrinsic drag-drawn size the way shapes/lines do) ─────────────
-  const addTextElement = useCallback((worldX: number, worldY: number) => {
-    const elementId = crypto.randomUUID();
-    const { width, height } = TEXT_ELEMENT_DEFAULT_SIZE;
-    const newTextNode: TextElementNode = {
-      id: elementId,
-      type: "textElement",
-      position: { x: worldX - width / 2, y: worldY - height / 2 },
-      selected: true,
-      data: {
-        text: "",
-        color: DEFAULT_COLOR,
-        autoEdit: true,
-        fontWeight: "normal",
-        fontSize: TEXT_DEFAULT_FONT_SIZE,
-        width,
-        height,
-      },
-    };
-    setNodes((prev) => [
-      ...prev.map((node) => (node.selected ? ({ ...node, selected: false } as CanvasNode) : node)),
-      newTextNode,
-    ]);
-    setMode("select");
-  }, [setMode]);
-
-  // ── Add a shape from a drag-drawn bounding box (Figma-style: drag sets
-  // the size; a plain click falls back to a centered default-sized shape) ──
-  const addShapeElement = useCallback(
-    (shapeKind: ShapeKind, start: Point, end: Point, isClick: boolean) => {
-      const elementId = crypto.randomUUID();
-      const width = isClick
-        ? SHAPE_DEFAULT_SIZE
-        : Math.max(Math.abs(end.x - start.x), SHAPE_MIN_DRAG_SIZE);
-      const height = isClick
-        ? SHAPE_DEFAULT_SIZE
-        : Math.max(Math.abs(end.y - start.y), SHAPE_MIN_DRAG_SIZE);
-      const x = isClick ? start.x - width / 2 : Math.min(start.x, end.x);
-      const y = isClick ? start.y - height / 2 : Math.min(start.y, end.y);
-      const newShapeNode: ShapeElementNode = {
-        id: elementId,
-        type: "shapeElement",
-        position: { x, y },
-        selected: true,
-        data: { shapeKind, color: "#93c5fd", width, height, strokeStyle: "solid" },
-      };
-      setNodes((prev) => [
-        ...prev.map((node) => (node.selected ? ({ ...node, selected: false } as CanvasNode) : node)),
-        newShapeNode,
-      ]);
-      setMode("select");
-    },
-    [setMode],
-  );
-
-  // ── Add a line/arrow element from two committed flow-space points ──
-  const addLineElement = useCallback(
-    (kind: "line" | "arrow", start: Point, end: Point) => {
-      const elementId = crypto.randomUUID();
-      const minX = Math.min(start.x, end.x);
-      const minY = Math.min(start.y, end.y);
-      const points: [Point, Point] = [
-        { x: start.x - minX, y: start.y - minY },
-        { x: end.x - minX, y: end.y - minY },
-      ];
-      const newLineNode: LineElementNode = {
-        id: elementId,
-        type: "lineElement",
-        position: { x: minX, y: minY },
-        selected: true,
-        data: { kind, points, color: "#93c5fd", strokeStyle: "solid" },
-      };
-      setNodes((prev) => [
-        ...prev.map((node) => (node.selected ? ({ ...node, selected: false } as CanvasNode) : node)),
-        newLineNode,
-      ]);
-      setMode("select");
-    },
-    [setMode],
-  );
-
-  // ── Snapping — lets a line/arrow endpoint "stick" to a nearby element's
-  // anchor point, the same magnetic feel as dragging a handle to connect
-  // nodes, while leaving the point exactly where dropped when nothing is
-  // close (still fully freeform). Mirrors AnchorHandles' side-midpoint-only
-  // layout, so a line/arrow snaps exactly onto the same spots you can drag
-  // a real connector from/to.
-  const getAnchorCandidates = useCallback((): Point[] => {
-    const candidates: Point[] = [];
-    const pushSidePoints = (x: number, y: number, w: number, h: number) => {
-      candidates.push(
-        { x: x + w / 2, y },
-        { x: x + w, y: y + h / 2 },
-        { x: x + w / 2, y: y + h },
-        { x, y: y + h / 2 },
-      );
-    };
-    nodesRef.current.forEach((node) => {
-      const measured = getNode(node.id)?.measured;
-      const { x, y } = node.position;
-      if (node.type === "conversation" || node.type === "shapeElement" || node.type === "textElement") {
-        pushSidePoints(x, y, measured?.width ?? node.data.width, measured?.height ?? node.data.height);
-      }
-    });
-    return candidates;
-  }, [getNode]);
-
-  const snapToAnchor = useCallback(
-    (point: Point): Point => {
-      let closest: Point | null = null;
-      let closestDist = SNAP_RADIUS;
-      for (const candidate of getAnchorCandidates()) {
-        const dist = Math.hypot(candidate.x - point.x, candidate.y - point.y);
-        if (dist < closestDist) {
-          closestDist = dist;
-          closest = candidate;
-        }
-      }
-      return closest ?? point;
-    },
-    [getAnchorCandidates],
-  );
-
-  // ── Drag-to-draw gesture — shape/line/arrow tools all commit on drag
-  // rather than a single click, so they share pane-level mouse listeners
-  // rather than onPaneClick. ──
-  const [drawPreview, setDrawPreview] = useState<DrawPreview | null>(null);
-
+  // ── Clipboard — native copy/cut/paste events, so it works without
+  // clipboard permissions and interoperates with other apps' text/images ──
+  const clipboardHandlerRef = useRef<(event: ClipboardEvent) => void>(() => {});
   useEffect(() => {
-    const wrapper = canvasWrapperRef.current;
-    if (!wrapper || !isDragMode) return;
-    const drawKind = effectiveMode as DrawKind;
-    const isLineKind = drawKind === "line" || drawKind === "arrow";
-
-    const onMouseDown = (event: MouseEvent) => {
-      if (event.button !== 0) return;
-      if ((event.target as HTMLElement).closest(".react-flow__node")) return;
-
-      const startFlowRaw = screenToFlowPosition({ x: event.clientX, y: event.clientY });
-      const startFlow = isLineKind ? snapToAnchor(startFlowRaw) : startFlowRaw;
-      const startScreen = flowToScreenPosition(startFlow);
-
-      setDrawPreview({
-        kind: drawKind,
-        startClientX: startScreen.x,
-        startClientY: startScreen.y,
-        currentClientX: startScreen.x,
-        currentClientY: startScreen.y,
-      });
-
-      const onMouseMove = (moveEvent: MouseEvent) => {
-        const flowRaw = screenToFlowPosition({ x: moveEvent.clientX, y: moveEvent.clientY });
-        const flowSnapped = isLineKind ? snapToAnchor(flowRaw) : flowRaw;
-        const screenSnapped = flowToScreenPosition(flowSnapped);
-        setDrawPreview((prev) =>
-          prev ? { ...prev, currentClientX: screenSnapped.x, currentClientY: screenSnapped.y } : prev,
-        );
-      };
-      const onMouseUp = (upEvent: MouseEvent) => {
-        window.removeEventListener("mousemove", onMouseMove);
-        window.removeEventListener("mouseup", onMouseUp);
-        setDrawPreview(null);
-
-        const endFlowRaw = screenToFlowPosition({ x: upEvent.clientX, y: upEvent.clientY });
-        const endFlow = isLineKind ? snapToAnchor(endFlowRaw) : endFlowRaw;
-        const dx = Math.abs(endFlow.x - startFlow.x);
-        const dy = Math.abs(endFlow.y - startFlow.y);
-        const isClick = dx < DRAG_COMMIT_THRESHOLD && dy < DRAG_COMMIT_THRESHOLD;
-
-        if (isLineKind) {
-          if (isClick) {
-            setMode("select");
-            return;
-          }
-          addLineElement(drawKind, startFlow, endFlow);
-        } else {
-          const shapeKind: ShapeKind =
-            drawKind === "shape-square" ? "square" : drawKind === "shape-circle" ? "circle" : "diamond";
-          addShapeElement(shapeKind, startFlow, endFlow, isClick);
+    clipboardHandlerRef.current = (event: ClipboardEvent) => {
+      if (isEditableTarget(event.target) || isAnyDialogOpen || !event.clipboardData) return;
+      if (event.type === "paste") {
+        const position = getPastePosition();
+        const files = Array.from(event.clipboardData.files);
+        if (files.some(isImageFile)) {
+          event.preventDefault();
+          void insertImageFiles(files, position);
+          return;
         }
-      };
-
-      window.addEventListener("mousemove", onMouseMove);
-      window.addEventListener("mouseup", onMouseUp);
-    };
-
-    wrapper.addEventListener("mousedown", onMouseDown);
-    return () => wrapper.removeEventListener("mousedown", onMouseDown);
-  }, [
-    isDragMode,
-    effectiveMode,
-    screenToFlowPosition,
-    flowToScreenPosition,
-    snapToAnchor,
-    setMode,
-    addLineElement,
-    addShapeElement,
-  ]);
-
-  const onPaneClick = useCallback(
-    (event: ReactMouseEvent) => {
-      if (mode === "text") {
-        const worldPosition = screenToFlowPosition({
-          x: event.clientX,
-          y: event.clientY,
-        });
-        addTextElement(worldPosition.x, worldPosition.y);
+        const text = event.clipboardData.getData("text/plain");
+        const pastedNodes = parseClipboardText(text);
+        if (pastedNodes && pastedNodes.length > 0) {
+          event.preventDefault();
+          const bounds = getBoxesBounds(pastedNodes.map(getNodeBox))!;
+          insertNodes(
+            cloneNodes(pastedNodes, {
+              x: position.x - (bounds.x + bounds.width / 2),
+              y: position.y - (bounds.y + bounds.height / 2),
+            }),
+          );
+          return;
+        }
+        if (text.trim()) {
+          event.preventDefault();
+          createTextAt(position, text);
+        }
         return;
       }
-      // Safety net — xyflow already clears selection on a bare pane click,
-      // this just guarantees it regardless of internal version behavior.
-      setNodes((prev) =>
-        prev.map((node) =>
-          node.selected ? { ...node, selected: false } : node,
-        ),
-      );
-    },
-    [mode, screenToFlowPosition, addTextElement],
-  );
-
-  // ── Add a chat node + call the AI ───────────────────────────────
-  //
-  // Branching is the only way conversation nodes ever connect — there is no
-  // separate "chained but unrelated" link type. `activeNodeId` carries the
-  // just-created node forward automatically (see the `setActiveNodeId(nodeId)`
-  // below) so simply continuing to type keeps branching from — and flowing
-  // straight down from — whatever you last sent, with no need to press
-  // "Branch" again. Explicitly clicking "Branch" on an older node (or
-  // clearing the active node) is what redirects or detaches that default.
-  const addNode = async (prompt: string) => {
-    const nodeId = crypto.randomUUID();
-    const allNodes = nodesRef.current;
-    const conversationNodes = allNodes.filter(
-      (node): node is ConversationNodeState => node.type === "conversation",
-    );
-    const lastConversationNode =
-      conversationNodes.length > 0
-        ? conversationNodes[conversationNodes.length - 1]
-        : undefined;
-    const branchParentNode = activeNodeId
-      ? conversationNodes.find((node) => node.id === activeNodeId)
-      : undefined;
-    const branchParentId = branchParentNode?.id ?? null;
-
-    let x: number, y: number;
-    if (branchParentNode && branchParentNode.id !== lastConversationNode?.id) {
-      // Explicit fork off an earlier node — branch out to the side.
-      const { w: parentW } = getNodeDims(branchParentNode.id);
-      const siblingCount = conversationNodes.filter(
-        (node) => node.data.branchParentId === branchParentNode.id,
-      ).length;
-      x = branchParentNode.position.x + parentW + 52;
-      y = branchParentNode.position.y + siblingCount * (NODE_H_EST + 24);
-    } else if (branchParentNode) {
-      // Continuing straight from the most recent node — keep flowing downward.
-      const { h: parentH } = getNodeDims(branchParentNode.id);
-      x = branchParentNode.position.x;
-      y = branchParentNode.position.y + parentH + 52;
-    } else {
-      // No active thread — a fresh, untethered conversation.
-      const { centerX, centerY } = getContainerCenter();
-      const viewport = getViewport();
-      x = (centerX - viewport.x) / viewport.zoom - NODE_W / 2;
-      y = (centerY - viewport.y) / viewport.zoom - NODE_H_EST / 2;
-    }
-    ({ x, y } = findFreeSpot(x, y, NODE_W, NODE_H_EST));
-
-    const newConversationNode: ConversationNodeState = {
-      id: nodeId,
-      type: "conversation",
-      position: { x, y },
-      selected: true,
-      data: {
-        prompt,
-        response: "",
-        loading: true,
-        minimized: false,
-        color: branchParentNode?.data.color ?? DEFAULT_COLOR,
-        branchParentId,
-        width: branchParentNode?.data.width ?? NODE_W,
-        height: branchParentNode?.data.height ?? CONVERSATION_DEFAULT_HEIGHT,
-      },
+      const selectedNodes = resolveLineBindings(nodesRef.current).filter((node) => node.selected);
+      if (selectedNodes.length === 0) return;
+      event.preventDefault();
+      event.clipboardData.setData("text/plain", createClipboardText(selectedNodes));
+      if (event.type === "cut") deleteSelection();
     };
-    setNodes((prev) => [
-      ...prev.map((node) =>
-        node.selected ? { ...node, selected: false } : node,
-      ),
-      newConversationNode,
-    ]);
-    setActiveNodeId(nodeId);
-    centerOn(x, y);
+  });
 
-    try {
-      const response = await simulateAI(
-        prompt,
-        branchParentNode?.data.prompt,
-        branchParentNode?.data.response,
-      );
-      setNodes((prev) =>
-        prev.map((node) =>
-          node.id === nodeId && node.type === "conversation"
-            ? { ...node, data: { ...node.data, response, loading: false } }
-            : node,
-        ),
-      );
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      setNodes((prev) =>
-        prev.map((node) =>
-          node.id === nodeId && node.type === "conversation"
-            ? {
-                ...node,
-                data: {
-                  ...node.data,
-                  response: `⚠ ${message}`,
-                  loading: false,
-                },
-              }
-            : node,
-        ),
-      );
-    }
-  };
+  useEffect(() => {
+    const onClipboardEvent = (event: ClipboardEvent) => clipboardHandlerRef.current(event);
+    document.addEventListener("copy", onClipboardEvent);
+    document.addEventListener("cut", onClipboardEvent);
+    document.addEventListener("paste", onClipboardEvent);
+    return () => {
+      document.removeEventListener("copy", onClipboardEvent);
+      document.removeEventListener("cut", onClipboardEvent);
+      document.removeEventListener("paste", onClipboardEvent);
+    };
+  }, []);
 
   // ── Hydration — attaches derived values + interaction callbacks fresh
   // every render, so nothing captured in persisted state can go stale ──
   const flowNodes = useMemo<HydratedCanvasNode[]>(
     () =>
-      nodes.map((node): HydratedCanvasNode => {
-        if (node.type === "conversation") {
-          const branchParentNode = node.data.branchParentId
-            ? nodes.find(
-                (candidate) => candidate.id === node.data.branchParentId,
-              )
-            : undefined;
-          const branchParentPromptPreview =
-            branchParentNode?.type === "conversation"
-              ? branchParentNode.data.prompt
+      resolvedNodes.map((node): HydratedCanvasNode => {
+        const isEditing = editingId === node.id;
+        const isBindingTarget = bindingTargetId === node.id;
+        const editingOverrides = isEditing ? { draggable: false } : {};
+        // xyflow keeps a node visibility:hidden until it has measured it a
+        // frame later — and a hidden element can't take focus, which made the
+        // first keystrokes into a brand-new text element go missing. Known
+        // initial dimensions let it render visible from the first frame.
+        const { width: initialWidth, height: initialHeight } = getNodeBox(node);
+        node = { ...node, initialWidth, initialHeight };
+        switch (node.type) {
+          case "conversation": {
+            const branchParentNode = node.data.branchParentId
+              ? resolvedNodes.find((candidate) => candidate.id === node.data.branchParentId)
               : undefined;
-          return {
-            ...node,
-            dragHandle: ".drag-handle",
-            data: {
-              ...node.data,
-              branchParentPromptPreview,
-              isBranchActive: activeNodeId === node.id,
-              onToggleBranch: () =>
-                setActiveNodeId((prev) => (prev === node.id ? null : node.id)),
-              onFocusNode: () => focusNode(node.id),
-              onExpandNode: () =>
-                setModal({
-                  prompt: node.data.prompt,
-                  response: node.data.response,
-                  parentPrompt: branchParentPromptPreview,
-                }),
-              onColorChange: (color: string) => updateColor(node.id, color),
-              onToggleMinimize: () => toggleMinimize(node.id),
-              onResizeElement: (width: number, height: number, x: number, y: number) =>
-                resizeConversationNode(node.id, width, height, x, y),
-            },
-          };
+            const branchParentPromptPreview =
+              branchParentNode?.type === "conversation" ? branchParentNode.data.prompt : undefined;
+            return {
+              ...node,
+              dragHandle: ".drag-handle",
+              data: {
+                ...node.data,
+                branchParentPromptPreview,
+                isBranchActive: activeNodeId === node.id,
+                isBindingTarget,
+                onToggleBranch: () => setActiveNodeId((previous) => (previous === node.id ? null : node.id)),
+                onFocusNode: () => focusNode(node.id),
+                onExpandNode: () =>
+                  setModal({
+                    prompt: node.data.prompt,
+                    response: node.data.response,
+                    parentPrompt: branchParentPromptPreview,
+                  }),
+                onColorChange: (color: string) =>
+                  updateNodeData<ConversationNodeState>(node.id, "conversation", (current) => ({
+                    data: { ...current.data, color },
+                  })),
+                onToggleMinimize: () =>
+                  updateNodeData<ConversationNodeState>(node.id, "conversation", (current) => ({
+                    data: { ...current.data, minimized: !current.data.minimized },
+                  })),
+                onResizeElement: (width: number, height: number, x: number, y: number) =>
+                  updateNodeData<ConversationNodeState>(node.id, "conversation", (current) => ({
+                    position: { x, y },
+                    data: { ...current.data, width, height },
+                  })),
+              },
+            };
+          }
+          case "textElement":
+            return {
+              ...node,
+              ...editingOverrides,
+              data: {
+                ...node.data,
+                isEditing,
+                isBindingTarget,
+                onTextChange: (text: string) =>
+                  updateNodeData<TextElementNode>(node.id, "textElement", (current) => ({
+                    data: { ...current.data, text },
+                  })),
+                onStopEditing: stopEditing,
+                onResizeElement: (width: number, x: number, y: number, handleKind: ResizeHandleKind) =>
+                  resizeTextElement(node.id, width, x, y, handleKind),
+              },
+            };
+          case "shapeElement":
+            return {
+              ...node,
+              ...editingOverrides,
+              // Unselected shapes are click-through except where their
+              // stroke (or fill) is actually painted; see ShapeElement.
+              style: node.selected ? undefined : { pointerEvents: "none" },
+              data: {
+                ...node.data,
+                isEditing,
+                isBindingTarget,
+                onLabelChange: (label: string) =>
+                  updateNodeData<ShapeElementNode>(node.id, "shapeElement", (current) => ({
+                    data: { ...current.data, label },
+                  })),
+                onStopEditing: stopEditing,
+                onResizeElement: (width: number, height: number, x: number, y: number) =>
+                  updateNodeData<ShapeElementNode>(node.id, "shapeElement", (current) => ({
+                    position: { x, y },
+                    data: { ...current.data, width, height },
+                  })),
+              },
+            };
+          case "lineElement":
+            return {
+              ...node,
+              style: { pointerEvents: "none" },
+              data: {
+                ...node.data,
+                onEndpointDrag: (endpointIndex: 0 | 1, flowPoint: Point) =>
+                  moveLineEndpoint(node.id, endpointIndex, flowPoint),
+                onEndpointDragEnd: () => setBindingTargetId(null),
+              },
+            };
+          case "imageElement":
+            return {
+              ...node,
+              data: {
+                ...node.data,
+                isBindingTarget,
+                onResizeElement: (width: number, height: number, x: number, y: number) =>
+                  updateNodeData<ImageElementNode>(node.id, "imageElement", (current) => ({
+                    position: { x, y },
+                    data: { ...current.data, width, height },
+                  })),
+              },
+            };
         }
-        if (node.type === "textElement") {
-          return {
-            ...node,
-            data: {
-              ...node.data,
-              onTextChange: (text: string) => updateElementText(node.id, text),
-              onColorChange: (color: string) => updateColor(node.id, color),
-              onDeleteElement: () => deleteElement(node.id),
-              onResizeElement: (width: number, height: number, x: number, y: number, handleKind: "corner" | "edge") =>
-                resizeTextElement(node.id, width, height, x, y, handleKind),
-            },
-          };
-        }
-        if (node.type === "shapeElement") {
-          return {
-            ...node,
-            data: {
-              ...node.data,
-              onColorChange: (color: string) => updateColor(node.id, color),
-              onDeleteElement: () => deleteElement(node.id),
-              onResizeElement: (width: number, height: number, x: number, y: number) =>
-                resizeShapeElement(node.id, width, height, x, y),
-            },
-          };
-        }
-        return {
-          ...node,
-          data: {
-            ...node.data,
-            onColorChange: (color: string) => updateColor(node.id, color),
-            onDeleteElement: () => deleteElement(node.id),
-            onPointsChange: (points: [Point, Point], position: Point) =>
-              updateLinePoints(node.id, points, position),
-            onSnapPoint: (point: Point) => snapToAnchor(point),
-          },
-        };
       }),
     [
-      nodes,
+      resolvedNodes,
+      editingId,
+      bindingTargetId,
       activeNodeId,
       focusNode,
-      updateColor,
-      toggleMinimize,
-      updateElementText,
-      deleteElement,
-      resizeShapeElement,
+      updateNodeData,
+      stopEditing,
       resizeTextElement,
-      resizeConversationNode,
-      updateLinePoints,
-      snapToAnchor,
+      moveLineEndpoint,
     ],
   );
 
-  // ── Connector edges — branch edges are derived from each conversation
-  // node's branch parent (as before, unchanged); anchor edges are real,
-  // user-created state living in `linkEdges`. ──
-  const flowEdges = useMemo<CanvasEdge[]>(() => {
-    const branchEdges: CanvasEdge[] = [];
-    nodes.forEach((node) => {
-      if (node.type !== "conversation") return;
-      if (node.data.branchParentId) {
-        branchEdges.push({
-          id: `branch-${node.id}`,
-          type: "branch",
-          source: node.data.branchParentId,
-          sourceHandle: "branchSource",
-          target: node.id,
-          targetHandle: "branchTarget",
-          selectable: false,
-          deletable: false,
-          data: {},
-        });
-      }
-    });
-    return [...branchEdges, ...linkEdges];
-  }, [nodes, linkEdges]);
-
-  const conversationNodeCount = nodes.filter(
-    (node) => node.type === "conversation",
-  ).length;
   const selectedNodes = nodes.filter((node) => node.selected);
   const selectedCount = selectedNodes.length;
-  const activeNode = activeNodeId
-    ? nodes.find((node) => node.id === activeNodeId)
-    : undefined;
-  const activeNodePrompt =
-    activeNode?.type === "conversation" ? activeNode.data.prompt : undefined;
+  const activeNode = activeNodeId ? nodes.find((node) => node.id === activeNodeId) : undefined;
+  const activeNodePrompt = activeNode?.type === "conversation" ? activeNode.data.prompt : undefined;
 
-  const paneCursor =
-    effectiveMode === "pan"
-      ? "grab"
-      : isTextMode || isDragMode
-        ? "crosshair"
-        : "default";
+  // Style panel: the selection's elements, or a prototype of the active
+  // drawing tool's element so its style can be chosen before drawing.
+  const styleSources = useMemo<StyleSource[]>(() => {
+    if (selectedNodes.length > 0) {
+      return selectedNodes.filter((node) => node.type !== "conversation").map((node) => node.data);
+    }
+    if (mode === "rectangle" || mode === "ellipse" || mode === "diamond") return [pickStyle(currentStyle, SHAPE_STYLE_KEYS)];
+    if (mode === "line" || mode === "arrow") return [pickStyle(currentStyle, LINE_STYLE_KEYS)];
+    if (mode === "text") return [{ text: "", ...pickStyle(currentStyle, TEXT_STYLE_KEYS) }];
+    return [];
+  }, [selectedNodes, mode, currentStyle]);
+  const selectedCardColor =
+    selectedNodes.find((node): node is ConversationNodeState => node.type === "conversation")?.data.color ?? null;
+  const isStylePanelVisible = styleSources.length > 0 || selectedCount > 0;
+  const sidebarWidth = isProjectsSidebarCollapsed ? SIDEBAR_COLLAPSED_WIDTH : SIDEBAR_EXPANDED_WIDTH;
 
-  // Screen-space (canvas-wrapper-relative) coordinates for the live
-  // shape/line/arrow drag preview, recomputed from the raw client
-  // coordinates tracked in `drawPreview` each time it changes.
-  const drawPreviewScreen = (() => {
-    if (!drawPreview) return null;
-    const rect = canvasWrapperRef.current?.getBoundingClientRect();
-    if (!rect) return null;
-    return {
-      kind: drawPreview.kind,
-      x1: drawPreview.startClientX - rect.left,
-      y1: drawPreview.startClientY - rect.top,
-      x2: drawPreview.currentClientX - rect.left,
-      y2: drawPreview.currentClientY - rect.top,
-    };
-  })();
+  const paneCursor = effectiveMode === "pan" ? "grab" : isCreationMode ? "crosshair" : "default";
+
+  // Wrapper-relative screen coordinates for the live shape/line/arrow
+  // preview — derived from flow coordinates and the (reactive) viewport.
+  const drawPreviewScreen = drawPreview
+    ? {
+        kind: drawPreview.kind,
+        x1: drawPreview.start.x * viewport.zoom + viewport.x,
+        y1: drawPreview.start.y * viewport.zoom + viewport.y,
+        x2: drawPreview.end.x * viewport.zoom + viewport.x,
+        y2: drawPreview.end.y * viewport.zoom + viewport.y,
+      }
+    : null;
+
+  const onCanvasDragOver = (event: ReactDragEvent) => {
+    if (event.dataTransfer.types.includes("Files")) {
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "copy";
+    }
+  };
+  const onCanvasDrop = (event: ReactDragEvent) => {
+    const files = Array.from(event.dataTransfer.files);
+    if (files.length === 0) return;
+    event.preventDefault();
+    void insertImageFiles(files, screenToFlowPosition({ x: event.clientX, y: event.clientY }));
+  };
 
   return (
     <div
+      ref={themeRootRef}
       data-theme={theme}
       className="w-screen h-screen overflow-hidden relative bg-surface font-sans"
     >
       <Toolbox
-        nodeCount={conversationNodeCount}
+        nodeCount={nodes.length}
         theme={theme}
-        scale={currentZoom}
+        scale={viewport.zoom}
         mode={effectiveMode}
+        isToolLocked={isToolLocked}
+        canUndo={history.canUndo}
+        canRedo={history.canRedo}
         onSetMode={setMode}
-        onToggleTheme={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
+        onToggleToolLock={() => setIsToolLocked((locked) => !locked)}
+        onInsertImage={() => void promptForImages()}
+        onUndo={history.undo}
+        onRedo={history.redo}
+        onToggleTheme={toggleTheme}
         onFitAll={fitAll}
-        onZoomIn={() => zoomIn({ duration: 200 })}
-        onZoomOut={() => zoomOut({ duration: 200 })}
+        onZoomIn={() => zoomIn({ duration: ZOOM_ANIMATION_MS })}
+        onZoomOut={() => zoomOut({ duration: ZOOM_ANIMATION_MS })}
         onZoomReset={resetZoomKeepingCenter}
-        stylePanelSlot={
-          selectedCount > 0 ? (
-            <StylePanel
-              selection={selectedNodes}
-              onColorChange={updateColorForSelection}
-              onFontWeightChange={updateFontWeightForSelection}
-              onStrokeStyleChange={updateStrokeStyleForSelection}
-              onBringToFront={bringSelectionToFront}
-              onSendToBack={sendSelectionToBack}
-            />
-          ) : undefined
+        menuSlot={
+          <MainMenu
+            onOpenFile={requestOpenFile}
+            onSaveFile={() => void saveToFile()}
+            onExportImage={() => setIsExportOpen(true)}
+            onClearCanvas={requestClearCanvas}
+            onShowShortcuts={() => setIsShortcutsOpen(true)}
+          />
         }
       />
 
+      {isStylePanelVisible && (
+        <StylePanel
+          sources={styleSources}
+          cardColor={selectedCardColor}
+          cardSwatches={SWATCHES}
+          hasSelection={selectedCount > 0}
+          onStyleChange={updateStyle}
+          onCardColorChange={updateCardColorForSelection}
+          onBringToFront={() => changeLayer("front")}
+          onBringForward={() => changeLayer("forward")}
+          onSendBackward={() => changeLayer("backward")}
+          onSendToBack={() => changeLayer("back")}
+          onDuplicate={duplicateSelection}
+          onDelete={deleteSelection}
+          style={{ left: sidebarWidth + STYLE_PANEL_GUTTER, top: TOP_PANEL_CLEARANCE }}
+        />
+      )}
+
       <ProjectsSidebar
         isCollapsed={isProjectsSidebarCollapsed}
-        onToggleCollapsed={() =>
-          setIsProjectsSidebarCollapsed((collapsed) => !collapsed)
-        }
+        onToggleCollapsed={() => setIsProjectsSidebarCollapsed((collapsed) => !collapsed)}
         harness={selectedHarness}
         onHarnessChange={setSelectedHarness}
+        projects={projects.projects}
+        currentProjectId={projects.currentProjectId}
+        onSelectProject={(projectId) => void projects.openProject(projectId)}
+        onCreateProject={(title, workingFolder) => void projects.createProject(title, workingFolder)}
+        onRenameProject={projects.renameProject}
+        onChangeWorkingFolder={projects.setWorkingFolder}
+        onDeleteProject={requestDeleteProject}
       />
 
       {/* ── Canvas area — full-bleed; the toolbox floats above it ──── */}
       <div
         ref={canvasWrapperRef}
         className={`absolute top-0 right-0 bottom-0 overflow-hidden transition-[left] duration-200 ease-in-out ${
-          effectiveMode === "pan" ? "cc-pan-mode" : ""
+          effectiveMode === "pan" ? "cc-pan-mode" : isCreationMode ? "cc-create-mode" : ""
         }`}
-        style={{
-          left: isProjectsSidebarCollapsed ? SIDEBAR_COLLAPSED_WIDTH : SIDEBAR_EXPANDED_WIDTH,
+        style={{ left: sidebarWidth }}
+        onContextMenu={(event) => event.preventDefault()}
+        onDoubleClick={onCanvasDoubleClick}
+        onDragOver={onCanvasDragOver}
+        onDrop={onCanvasDrop}
+        onPointerDownCapture={() => {
+          // xyflow's pane swallows the mousedown default, so a focused chat
+          // input would otherwise keep focus (and eat Delete/shortcut keys)
+          // after clicking the canvas.
+          const focused = document.activeElement;
+          if (focused instanceof HTMLElement && isEditableTarget(focused) && !canvasWrapperRef.current?.contains(focused)) {
+            focused.blur();
+          }
         }}
-        onContextMenu={(e) => e.preventDefault()}
+        onPointerMove={(event) => {
+          lastPointerFlowPositionRef.current = screenToFlowPosition({ x: event.clientX, y: event.clientY });
+        }}
+        onPointerLeave={() => {
+          lastPointerFlowPositionRef.current = null;
+        }}
       >
         <CanvasEdgeMarkerDefs />
-        <ReactFlow<CanvasNode, CanvasEdge>
+        <ReactFlow<CanvasNode, BranchEdge>
           nodes={flowNodes}
-          edges={flowEdges}
+          edges={branchEdges}
           nodeTypes={nodeTypes}
           edgeTypes={edgeTypes}
           onNodesChange={onNodesChange}
-          onEdgesChange={onEdgesChange}
           onConnect={onConnect}
-          isValidConnection={isValidAnchorConnection}
+          isValidConnection={isValidConnection}
+          onNodeDragStart={onNodeDragStart}
+          onSelectionDragStart={onSelectionDragStart}
+          onNodeDoubleClick={onNodeDoubleClick}
           onPaneClick={onPaneClick}
+          onMoveEnd={projects.scheduleSave}
+          connectionLineStyle={{ stroke: "var(--color-accent)", strokeWidth: 2 }}
           style={{ cursor: paneCursor }}
           minZoom={SCALE_MIN}
           maxZoom={SCALE_MAX}
           panOnDrag={effectiveMode === "pan" ? [0, 1] : isDragMode ? false : [1]}
-          nodesDraggable={effectiveMode !== "pan"}
+          panOnScroll
+          panOnScrollSpeed={PAN_ON_SCROLL_SPEED}
+          zoomOnScroll={false}
+          nodesDraggable={effectiveMode === "select"}
+          elementsSelectable={!isCreationMode}
           selectionOnDrag={effectiveMode === "select"}
           selectionKeyCode={null}
+          multiSelectionKeyCode="Shift"
           deleteKeyCode={null}
           zoomOnDoubleClick={false}
           nodesConnectable
+          connectionMode={ConnectionMode.Loose}
+          // Click-a-handle-then-another connecting surprised people who were
+          // only clicking an edge midpoint to select; dragging still connects.
+          connectOnClick={false}
           // Off deliberately — xyflow's default temporarily bumps a
           // selected/dragged node's stacking above everything else, which
-          // would override the explicit ordering from bringSelectionToFront/
-          // sendSelectionToBack the moment it's touched. With this off, a
-          // node's zIndex (set only by those two actions) is the sole thing
-          // governing stacking, so selecting or moving an element never
-          // changes its layer.
+          // would override the explicit layer ordering the moment it's
+          // touched. With this off, a node's zIndex (set only by the layer
+          // actions and on creation) is the sole thing governing stacking.
           elevateNodesOnSelect={false}
         >
           <Background
@@ -1206,19 +1790,11 @@ function CanvasChatInner() {
                         px-3.5 py-1.5 rounded-full text-xs font-semibold
                         bg-surface-overlay border border-accent text-foreground shadow-card"
         >
-          <FontAwesomeIcon
-            icon={faLayerGroup}
-            className="text-accent w-3 h-3"
-          />
+          <FontAwesomeIcon icon={faLayerGroup} className="text-accent w-3 h-3" />
           {selectedCount} item{selectedCount > 1 ? "s" : ""} selected
           <button
-            onClick={() =>
-              setNodes((prev) =>
-                prev.map((node) =>
-                  node.selected ? { ...node, selected: false } : node,
-                ),
-              )
-            }
+            onClick={() => setNodes((previous) => deselectAll(previous))}
+            aria-label="Clear selection"
             className="text-foreground-muted bg-transparent border-none cursor-pointer hover:text-foreground transition-colors"
           >
             <FontAwesomeIcon icon={faXmark} className="w-3 h-3" />
@@ -1230,15 +1806,33 @@ function CanvasChatInner() {
       {modeToast && (
         <div
           key={modeToast.id}
-          onAnimationEnd={() =>
-            setModeToast((t) => (t && t.id === modeToast.id ? null : t))
-          }
+          onAnimationEnd={() => setModeToast((toast) => (toast && toast.id === modeToast.id ? null : toast))}
           className="fixed left-1/2 z-[1500] pointer-events-none
                      px-3.5 py-1.5 rounded-full text-xs font-semibold text-white bg-accent
-                     shadow-[0_4px_16px_rgba(94,106,210,.45)] animate-mode-toast"
+                     shadow-card animate-mode-toast"
           style={{ top: TOP_PANEL_CLEARANCE }}
         >
           {modeToast.text}
+        </div>
+      )}
+
+      {/* Notices — confirmations and errors */}
+      {notice && (
+        <div
+          key={notice.id}
+          role={notice.tone === "error" ? "alert" : "status"}
+          className={`fixed left-1/2 -translate-x-1/2 bottom-[120px] z-[1600] flex items-center gap-2 max-w-[560px]
+                      px-4 py-2 rounded-xl text-[13px] font-medium shadow-card animate-node-in border
+                      ${notice.tone === "error" ? "bg-surface-overlay border-accent text-foreground" : "bg-surface-overlay border-border text-foreground"}`}
+        >
+          <span className="flex-1">{notice.text}</span>
+          <button
+            onClick={() => setNotice(null)}
+            aria-label="Dismiss"
+            className="text-foreground-muted bg-transparent border-none cursor-pointer hover:text-foreground"
+          >
+            <FontAwesomeIcon icon={faXmark} className="w-3 h-3" />
+          </button>
         </div>
       )}
 
@@ -1246,16 +1840,14 @@ function CanvasChatInner() {
       {activeNodeId && (
         <div
           className="fixed left-1/2 -translate-x-1/2 z-[200] flex items-center gap-2
-                     px-4 py-1.5 rounded-full text-xs font-semibold text-white bg-accent"
-          style={{
-            top: TOP_PANEL_CLEARANCE,
-            boxShadow: "0 4px 16px rgba(94,106,210,.45)",
-          }}
+                     px-4 py-1.5 rounded-full text-xs font-semibold text-white bg-accent shadow-card"
+          style={{ top: TOP_PANEL_CLEARANCE }}
         >
           <FontAwesomeIcon icon={faCodeBranch} className="opacity-80 w-3 h-3" />
           Branch mode — type below to continue this thread
           <button
             onClick={() => setActiveNodeId(null)}
+            aria-label="Stop branching"
             className="opacity-70 hover:opacity-100 transition-opacity bg-transparent border-none text-white cursor-pointer"
           >
             <FontAwesomeIcon icon={faXmark} className="w-3 h-3" />
@@ -1264,49 +1856,52 @@ function CanvasChatInner() {
       )}
 
       {/* Empty state */}
-      {conversationNodeCount === 0 && (
+      {projects.isReady && nodes.length === 0 && (
         <div
           className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2
                         text-center pointer-events-none z-[1]"
+          style={{ marginLeft: sidebarWidth / 2 }}
         >
-          <div className="text-4xl text-foreground-subtle mb-4">✦</div>
+          <div className="text-4xl text-foreground-muted mb-4">✦</div>
           <div className="text-lg font-semibold text-foreground-muted mb-2 tracking-tight">
-            Canvas Chat
+            {projectTitle}
           </div>
-          <div className="text-[13px] text-foreground-subtle leading-7 max-w-[280px]">
-            Type below to start ·{" "}
-            <strong className="text-foreground-muted font-semibold">
-              Drag
-            </strong>{" "}
-            to select ·{" "}
-            <strong className="text-foreground-muted font-semibold">Tab</strong>{" "}
-            to switch ·{" "}
-            <strong className="text-foreground-muted font-semibold">
-              hold Space
-            </strong>{" "}
-            to pan
+          <div className="text-[13px] text-foreground-muted leading-7 max-w-[340px]">
+            Type below to start a chat · pick a tool (or press{" "}
+            <strong className="text-foreground font-semibold">R</strong>,{" "}
+            <strong className="text-foreground font-semibold">A</strong>,{" "}
+            <strong className="text-foreground font-semibold">T</strong>) to draw ·{" "}
+            <strong className="text-foreground font-semibold">double-click</strong> to add text ·{" "}
+            <strong className="text-foreground font-semibold">?</strong> for shortcuts
           </div>
         </div>
       )}
 
       <Joystick
         onPan={(deltaX, deltaY) => {
-          const viewport = getViewport();
-          setViewport({
-            x: viewport.x + deltaX,
-            y: viewport.y + deltaY,
-            zoom: viewport.zoom,
-          });
+          const current = getViewport();
+          setViewport({ x: current.x + deltaX, y: current.y + deltaY, zoom: current.zoom });
         }}
         onStart={() => {}}
+        leftOffset={sidebarWidth}
       />
 
       <ChatInput
         activeNodeId={activeNodeId}
         activeNodePrompt={activeNodePrompt}
-        onSubmit={addNode}
+        onSubmit={(prompt) => void addConversationNode(prompt)}
         onClearActive={() => setActiveNodeId(null)}
       />
+
+      <ConfirmDialog request={confirmRequest} onClose={() => setConfirmRequest(null)} />
+      <ExportDialog
+        isOpen={isExportOpen}
+        hasSelection={selectedCount > 0}
+        isExporting={isExporting}
+        onClose={() => setIsExportOpen(false)}
+        onExport={(settings) => void exportImage(settings)}
+      />
+      <ShortcutsDialog isOpen={isShortcutsOpen} onClose={() => setIsShortcutsOpen(false)} />
 
       {/* ── Full-content modal ─────────────────────────────────── */}
       {modal && (
@@ -1319,17 +1914,20 @@ function CanvasChatInner() {
           onClick={() => setModal(null)}
         >
           <div
+            role="dialog"
+            aria-modal="true"
+            aria-label="Full conversation"
             className="bg-surface-overlay border border-border rounded-2xl shadow-card-active
                        w-full max-w-2xl max-h-[80vh] flex flex-col font-sans"
-            onClick={(e) => e.stopPropagation()}
+            onClick={(event) => event.stopPropagation()}
           >
-            {/* Modal header */}
             <div className="flex items-center justify-between px-6 py-4 border-b border-border shrink-0">
               <span className="text-sm font-semibold text-foreground tracking-tight">
                 Full conversation
               </span>
               <button
                 onClick={() => setModal(null)}
+                aria-label="Close"
                 className="text-foreground-muted hover:text-foreground
                            bg-transparent border-none cursor-pointer transition-colors"
               >
@@ -1337,17 +1935,13 @@ function CanvasChatInner() {
               </button>
             </div>
 
-            {/* Modal body */}
             <div className="cc-scroll overflow-y-auto flex-1 px-6 py-5 flex flex-col gap-5">
               {modal.parentPrompt && (
                 <div
                   className="inline-flex items-center gap-1.5 text-xs text-foreground-muted
                                 bg-surface-subtle border border-border rounded-full px-3 py-1 self-start"
                 >
-                  <FontAwesomeIcon
-                    icon={faCodeBranch}
-                    className="text-accent w-2.5 h-2.5"
-                  />
+                  <FontAwesomeIcon icon={faCodeBranch} className="text-accent w-2.5 h-2.5" />
                   Branched from: &ldquo;{modal.parentPrompt.slice(0, 80)}
                   {modal.parentPrompt.length > 80 ? "…" : ""}&rdquo;
                 </div>
@@ -1365,16 +1959,21 @@ function CanvasChatInner() {
               <div className="h-px bg-border-subtle" />
 
               <div>
-                <p className="text-[10px] font-bold uppercase tracking-widest text-accent mb-2">
-                  AI
-                </p>
+                <div className="flex items-center justify-between mb-2">
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-accent m-0">
+                    AI
+                  </p>
+                  {modal.response && (
+                    <CopyButton text={modal.response} className="text-foreground-muted hover:text-foreground" />
+                  )}
+                </div>
                 {modal.response ? (
                   <MarkdownContent
                     content={modal.response}
                     className="text-sm text-foreground-muted leading-relaxed"
                   />
                 ) : (
-                  <p className="text-sm text-foreground-subtle italic">
+                  <p className="text-sm text-foreground-muted italic">
                     Still generating…
                   </p>
                 )}
@@ -1388,7 +1987,7 @@ function CanvasChatInner() {
 }
 
 interface DrawPreviewScreen {
-  kind: DrawKind;
+  kind: DragDrawMode;
   x1: number;
   y1: number;
   x2: number;
@@ -1398,8 +1997,7 @@ interface DrawPreviewScreen {
 const SHAPE_PREVIEW_CORNER_RADIUS = 8;
 
 // Live outline shown while dragging out a new shape/line/arrow, in the
-// canvas wrapper's own screen space (not flow space — no pan/zoom happens
-// mid-gesture since panOnDrag is disabled for these tools).
+// canvas wrapper's own screen space.
 function DrawPreviewOverlay({ preview }: { preview: DrawPreviewScreen }) {
   const isLineKind = preview.kind === "line" || preview.kind === "arrow";
   const x = Math.min(preview.x1, preview.x2);
@@ -1425,7 +2023,7 @@ function DrawPreviewOverlay({ preview }: { preview: DrawPreviewScreen }) {
           strokeDasharray="6 4"
           markerEnd={preview.kind === "arrow" ? "url(#arrow-preview)" : undefined}
         />
-      ) : preview.kind === "shape-diamond" ? (
+      ) : preview.kind === "diamond" ? (
         <polygon
           points={`${x + width / 2},${y} ${x + width},${y + height / 2} ${x + width / 2},${y + height} ${x},${y + height / 2}`}
           fill="none"
@@ -1439,8 +2037,8 @@ function DrawPreviewOverlay({ preview }: { preview: DrawPreviewScreen }) {
           y={y}
           width={width}
           height={height}
-          rx={preview.kind === "shape-circle" ? width / 2 : SHAPE_PREVIEW_CORNER_RADIUS}
-          ry={preview.kind === "shape-circle" ? height / 2 : SHAPE_PREVIEW_CORNER_RADIUS}
+          rx={preview.kind === "ellipse" ? width / 2 : SHAPE_PREVIEW_CORNER_RADIUS}
+          ry={preview.kind === "ellipse" ? height / 2 : SHAPE_PREVIEW_CORNER_RADIUS}
           fill="none"
           stroke="var(--color-accent)"
           strokeWidth={2}

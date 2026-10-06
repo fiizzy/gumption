@@ -92,7 +92,7 @@ export default function ChatInput({ activeNodeId, activeNodePrompt, onSubmit, on
 
       {/* Hint */}
       {!activeNodeId && (
-        <p className="mt-1.5 text-center text-[11px] text-foreground-subtle tracking-wide">
+        <p className="mt-1.5 text-center text-[11px] text-foreground-muted tracking-wide">
           Press <strong className="text-foreground-muted font-semibold">Branch</strong> on any node to continue a thread
           · <strong className="text-foreground-muted font-semibold">Esc</strong> to deselect
         </p>

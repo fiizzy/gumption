@@ -136,6 +136,13 @@
   cursor: grab !important;
 }
 
+/* Creation tools (shapes, lines, text) draw over whatever is underneath,
+   like Excalidraw — existing elements must not grab the gesture. */
+.cc-create-mode .react-flow__nodes,
+.cc-create-mode .react-flow__nodes * {
+  pointer-events: none !important;
+}
+
 /* ── Thin scrollbar for node bodies ── */
 .cc-scroll {
   scrollbar-width: thin;

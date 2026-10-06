@@ -1,122 +1,116 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
+import type { PointerEvent as ReactPointerEvent } from "react";
 import { useReactFlow, type NodeProps } from "@xyflow/react";
-import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
-import { faXmark } from "@fortawesome/free-solid-svg-icons";
-import type { HydratedLineElementNode, Point } from "../types";
+import type { HydratedLineElementNode } from "../types";
+import { getLinePaths } from "../lib/roughShapes";
+import RoughPaths from "./RoughPaths";
 
 const ENDPOINT_SIZE = 12;
-const HIT_STROKE_WIDTH = 16;
-const DASHED_PATTERN = "8 6";
+const HIT_STROKE_MIN_WIDTH = 16;
+const HIT_STROKE_PADDING = 10;
+const SELECTION_HIGHLIGHT_PADDING = 6;
+const SELECTION_HIGHLIGHT_OPACITY = 0.25;
 
 type Props = NodeProps<HydratedLineElementNode>;
 
-export default function LineElement({
-  id,
-  data,
-  selected,
-  positionAbsoluteX,
-  positionAbsoluteY,
-}: Props) {
+export default function LineElement({ data, selected }: Props) {
   const { screenToFlowPosition } = useReactFlow();
-  const [draggingIndex, setDraggingIndex] = useState<0 | 1 | null>(null);
+  const [draggingEndpointIndex, setDraggingEndpointIndex] = useState<0 | 1 | null>(null);
 
-  const { points, kind, color, strokeStyle, onPointsChange, onDeleteElement, onSnapPoint } = data;
-  const width = Math.max(Math.abs(points[1].x - points[0].x), 1);
-  const height = Math.max(Math.abs(points[1].y - points[0].y), 1);
+  const {
+    kind,
+    points,
+    seed,
+    strokeColor,
+    strokeWidth,
+    strokeStyle,
+    sloppiness,
+    opacity,
+    onEndpointDrag,
+    onEndpointDragEnd,
+  } = data;
+  const [start, end] = points;
+  const width = Math.max(Math.abs(end.x - start.x), 1);
+  const height = Math.max(Math.abs(end.y - start.y), 1);
 
-  const beginDrag = (index: 0 | 1) => (event: React.PointerEvent<HTMLDivElement>) => {
+  const roughPaths = useMemo(
+    () => getLinePaths({ kind, points, seed, strokeWidth, strokeStyle, sloppiness }),
+    [kind, points, seed, strokeWidth, strokeStyle, sloppiness],
+  );
+
+  const beginEndpointDrag = (index: 0 | 1) => (event: ReactPointerEvent<HTMLDivElement>) => {
     event.stopPropagation();
     event.currentTarget.setPointerCapture(event.pointerId);
-    setDraggingIndex(index);
+    setDraggingEndpointIndex(index);
   };
 
-  const continueDrag = (index: 0 | 1) => (event: React.PointerEvent<HTMLDivElement>) => {
-    if (draggingIndex !== index) return;
+  const continueEndpointDrag = (index: 0 | 1) => (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (draggingEndpointIndex !== index) return;
     event.stopPropagation();
-    const otherIndex: 0 | 1 = index === 0 ? 1 : 0;
-    const otherAbsolute: Point = {
-      x: positionAbsoluteX + points[otherIndex].x,
-      y: positionAbsoluteY + points[otherIndex].y,
-    };
-    const draggedAbsoluteRaw = screenToFlowPosition({ x: event.clientX, y: event.clientY });
-    const draggedAbsolute = onSnapPoint(draggedAbsoluteRaw);
-    const newMinX = Math.min(draggedAbsolute.x, otherAbsolute.x);
-    const newMinY = Math.min(draggedAbsolute.y, otherAbsolute.y);
-    const newPoints: [Point, Point] = [points[0], points[1]];
-    newPoints[index] = { x: draggedAbsolute.x - newMinX, y: draggedAbsolute.y - newMinY };
-    newPoints[otherIndex] = { x: otherAbsolute.x - newMinX, y: otherAbsolute.y - newMinY };
-    onPointsChange(newPoints, { x: newMinX, y: newMinY });
+    onEndpointDrag(index, screenToFlowPosition({ x: event.clientX, y: event.clientY }));
   };
 
-  const endDrag = (event: React.PointerEvent<HTMLDivElement>) => {
+  const endEndpointDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (draggingEndpointIndex === null) return;
     event.currentTarget.releasePointerCapture(event.pointerId);
-    setDraggingIndex(null);
+    setDraggingEndpointIndex(null);
+    onEndpointDragEnd();
   };
-
-  const markerId = `arrow-line-${id}`;
 
   return (
-    <div className="relative" style={{ width, height, cursor: "grab" }}>
-      <svg
-        className="absolute inset-0 w-full h-full overflow-visible"
-        viewBox={`0 0 ${width} ${height}`}
-        preserveAspectRatio="none"
-      >
-        <defs>
-          <marker id={markerId} markerWidth="7" markerHeight="5" refX="5" refY="2.5" orient="auto">
-            <polygon points="0 0, 7 2.5, 0 5" fill={color} />
-          </marker>
-        </defs>
-        {/* Wide transparent stroke — the actual click/drag hit target for a thin line */}
+    <div className="relative text-foreground" style={{ width, height }}>
+      <svg className="absolute inset-0 overflow-visible" width={width} height={height}>
+        {selected && (
+          <line
+            x1={start.x}
+            y1={start.y}
+            x2={end.x}
+            y2={end.y}
+            stroke="var(--color-accent)"
+            strokeWidth={strokeWidth + SELECTION_HIGHLIGHT_PADDING}
+            strokeLinecap="round"
+            opacity={SELECTION_HIGHLIGHT_OPACITY}
+            pointerEvents="none"
+          />
+        )}
+        {/* Wide invisible stroke — the actual click/drag hit target for a
+            thin line; the node's own box is click-through (see CanvasChat). */}
         <line
-          x1={points[0].x} y1={points[0].y}
-          x2={points[1].x} y2={points[1].y}
+          x1={start.x}
+          y1={start.y}
+          x2={end.x}
+          y2={end.y}
           stroke="transparent"
-          strokeWidth={HIT_STROKE_WIDTH}
+          strokeWidth={Math.max(HIT_STROKE_MIN_WIDTH, strokeWidth + HIT_STROKE_PADDING)}
+          strokeLinecap="round"
+          pointerEvents="stroke"
+          className="cursor-move"
         />
-        <line
-          x1={points[0].x} y1={points[0].y}
-          x2={points[1].x} y2={points[1].y}
-          stroke={color}
-          strokeWidth={selected ? 2.5 : 2}
-          strokeDasharray={strokeStyle === "dashed" ? DASHED_PATTERN : undefined}
-          markerEnd={kind === "arrow" ? `url(#${markerId})` : undefined}
-        />
+        <g pointerEvents="none" style={{ opacity: opacity / 100 }}>
+          <RoughPaths paths={roughPaths} strokeColor={strokeColor} strokeWidth={strokeWidth} strokeStyle={strokeStyle} />
+        </g>
       </svg>
 
-      {selected && (
-        <>
-          {([0, 1] as const).map((index) => (
-            <div
-              key={index}
-              onPointerDown={beginDrag(index)}
-              onPointerMove={continueDrag(index)}
-              onPointerUp={endDrag}
-              className="nodrag absolute rounded-full bg-surface-overlay border-2 border-accent cursor-grab active:cursor-grabbing z-20"
-              style={{
-                width: ENDPOINT_SIZE,
-                height: ENDPOINT_SIZE,
-                left: points[index].x - ENDPOINT_SIZE / 2,
-                top: points[index].y - ENDPOINT_SIZE / 2,
-              }}
-            />
-          ))}
-          <button
-            onClick={onDeleteElement}
-            title="Delete"
-            className="nodrag absolute w-6 h-6 flex items-center justify-center rounded-md border border-border bg-surface-overlay
-                       text-foreground-muted hover:text-foreground hover:bg-surface-subtle cursor-pointer z-20"
+      {selected &&
+        ([0, 1] as const).map((index) => (
+          <div
+            key={index}
+            onPointerDown={beginEndpointDrag(index)}
+            onPointerMove={continueEndpointDrag(index)}
+            onPointerUp={endEndpointDrag}
+            onPointerCancel={endEndpointDrag}
+            className="nodrag nopan absolute rounded-full bg-surface-overlay border-2 border-accent cursor-crosshair z-20"
             style={{
-              left: (points[0].x + points[1].x) / 2 - 12,
-              top: (points[0].y + points[1].y) / 2 - 12,
+              width: ENDPOINT_SIZE,
+              height: ENDPOINT_SIZE,
+              left: points[index].x - ENDPOINT_SIZE / 2,
+              top: points[index].y - ENDPOINT_SIZE / 2,
+              pointerEvents: "all",
             }}
-          >
-            <FontAwesomeIcon icon={faXmark} className="w-3 h-3" />
-          </button>
-        </>
-      )}
+          />
+        ))}
     </div>
   );
 }

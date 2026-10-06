@@ -1,23 +1,9 @@
 "use client";
 
 import { NodeResizeControl, ResizeControlVariant } from "@xyflow/react";
-import { cn } from "../lib/cn";
+import type { ResizeHandleKind } from "../types";
 
-// Corners resize both axes and reveal on hovering the node — or stay shown
-// while selected — the same convention AnchorHandles uses (requires the
-// node's own outer wrapper to have the Tailwind `group` class). Edges
-// resize a single axis and reveal themselves purely on hovering that edge
-// specifically; both interactive hit areas exist regardless of visibility,
-// matching AnchorHandles' always-present-but-visually-toggled handles.
-// Edges render as a full-length strip rather than a single dot so they
-// never visually collide with the small anchor square sitting at the exact
-// center of the same edge.
-const CORNER_CONTROLS: { position: "top-left" | "top-right" | "bottom-right" | "bottom-left" }[] = [
-  { position: "top-left" },
-  { position: "top-right" },
-  { position: "bottom-right" },
-  { position: "bottom-left" },
-];
+const CORNER_POSITIONS = ["top-left", "top-right", "bottom-right", "bottom-left"] as const;
 
 const EDGE_CONTROLS: {
   position: "top" | "right" | "bottom" | "left";
@@ -31,30 +17,38 @@ const EDGE_CONTROLS: {
 
 const HANDLE_VISUAL_SIZE = 8;
 const EDGE_VISUAL_THICKNESS = 4;
-// Hit area bigger than the visible square, same reasoning as AnchorHandles
-// — a resize handle you can actually land a drag on without hunting for it.
-// Overridable per caller: a small element (like a freshly-placed text box)
-// can be mostly *covered* by the default sizes, which then swallow the
-// plain clicks that were supposed to reach the element's own content.
+// Hit areas are bigger than the visible square so a resize handle can be
+// grabbed without hunting for it. Overridable per caller: on a small
+// element (a one-line text box) the defaults would cover most of it and
+// swallow the clicks meant for its own content.
 const DEFAULT_CORNER_HIT_SIZE = 20;
-const DEFAULT_EDGE_HIT_THICKNESS = 28;
+const DEFAULT_EDGE_HIT_THICKNESS = 16;
+const CORNER_Z_INDEX = 16;
+// Below AnchorHandles (z-20) so the anchor square at each edge's center
+// keeps priority for connecting.
+const EDGE_Z_INDEX = 15;
 
-export type ResizeHandleKind = "corner" | "edge";
+export type ResizeEdges = "all" | "horizontal" | "none";
 
 interface Props {
-  isVisible: boolean;
   minWidth: number;
   minHeight: number;
   onResize: (width: number, height: number, x: number, y: number, handleKind: ResizeHandleKind) => void;
+  edges?: ResizeEdges;
+  keepAspectRatioOnCorners?: boolean;
   cornerHitSize?: number;
   edgeHitThickness?: number;
 }
 
+// Rendered only while the element is selected. Pointer events are forced
+// on because some elements (transparent shapes) switch their wrapper's
+// pointer events off so clicks pass through their empty interior.
 export default function ResizeHandles({
-  isVisible,
   minWidth,
   minHeight,
   onResize,
+  edges = "all",
+  keepAspectRatioOnCorners = false,
   cornerHitSize = DEFAULT_CORNER_HIT_SIZE,
   edgeHitThickness = DEFAULT_EDGE_HIT_THICKNESS,
 }: Props) {
@@ -62,14 +56,19 @@ export default function ResizeHandles({
     (handleKind: ResizeHandleKind) => (_: unknown, params: { width: number; height: number; x: number; y: number }) =>
       onResize(params.width, params.height, params.x, params.y, handleKind);
 
+  const visibleEdges = EDGE_CONTROLS.filter(
+    ({ resizeDirection }) => edges === "all" || (edges === "horizontal" && resizeDirection === "horizontal"),
+  );
+
   return (
     <>
-      {CORNER_CONTROLS.map(({ position }) => (
+      {CORNER_POSITIONS.map((position) => (
         <NodeResizeControl
           key={position}
           position={position}
           minWidth={minWidth}
           minHeight={minHeight}
+          keepAspectRatio={keepAspectRatioOnCorners}
           onResize={makeResizeHandler("corner")}
           style={{
             width: cornerHitSize,
@@ -80,22 +79,18 @@ export default function ResizeHandles({
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
-            // Above both the edge strips (z-index 15 below) and the
-            // node's own content, so corners still win in the overlap.
-            zIndex: 16,
+            pointerEvents: "all",
+            zIndex: CORNER_Z_INDEX,
           }}
         >
           <div
-            className={cn(
-              "pointer-events-none rounded-[2px] border-2 border-surface-overlay bg-accent transition-opacity",
-              isVisible ? "opacity-100" : "opacity-0 group-hover:opacity-100",
-            )}
+            className="pointer-events-none rounded-[2px] border-2 border-surface-overlay bg-accent"
             style={{ width: HANDLE_VISUAL_SIZE, height: HANDLE_VISUAL_SIZE }}
           />
         </NodeResizeControl>
       ))}
 
-      {EDGE_CONTROLS.map(({ position, resizeDirection }) => {
+      {visibleEdges.map(({ position, resizeDirection }) => {
         const isVertical = position === "left" || position === "right";
         return (
           <NodeResizeControl
@@ -114,13 +109,8 @@ export default function ResizeHandles({
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
-              // Half this band sits inside the shape's own bounds, where the
-              // node's header/body/text content would otherwise sit on top
-              // of it in normal DOM-order stacking and swallow the hover —
-              // this keeps the inward half just as reachable as the outward
-              // half. Still below AnchorHandles (z-20) so the anchor square
-              // at this edge's exact center keeps priority for connecting.
-              zIndex: 15,
+              pointerEvents: "all",
+              zIndex: EDGE_Z_INDEX,
             }}
           >
             <div

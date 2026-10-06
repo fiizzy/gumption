@@ -7,6 +7,7 @@ import { MAX_SPEED } from './joystick.constants';
 const BASE   = 88;           // outer ring diameter (px)
 const THUMB  = 34;           // thumb diameter (px)
 const TRAVEL = (BASE - THUMB) / 2 - 6; // max thumb displacement from centre
+const EDGE_MARGIN = 32;     // gap from the bottom-left of the canvas area (px)
 
 interface Props {
   /** Called every animation frame while the joystick is pushed.
@@ -14,9 +15,12 @@ interface Props {
   onPan: (dx: number, dy: number) => void;
   /** Called once on pointerdown so the parent can cancel any running animation. */
   onStart: () => void;
+  /** Width of whatever is docked on the left (the projects sidebar), so the
+   *  joystick sits on the canvas rather than underneath it. */
+  leftOffset: number;
 }
 
-export default function Joystick({ onPan, onStart }: Props) {
+export default function Joystick({ onPan, onStart, leftOffset }: Props) {
   const [thumbPos, setThumbPos] = useState({ x: 0, y: 0 });
   const [active,   setActive]   = useState(false);
 
@@ -89,8 +93,8 @@ export default function Joystick({ onPan, onStart }: Props) {
   return (
     <div
       ref={baseRef}
-      className="fixed bottom-8 left-8 z-[200] select-none touch-none cursor-grab"
-      style={{ width: BASE, height: BASE }}
+      className="fixed z-[200] select-none touch-none cursor-grab transition-[left] duration-200 ease-in-out"
+      style={{ width: BASE, height: BASE, left: leftOffset + EDGE_MARGIN, bottom: EDGE_MARGIN }}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}

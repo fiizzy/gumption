@@ -3,15 +3,22 @@
 import { useEffect, useCallback } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { faXmark } from "@fortawesome/free-solid-svg-icons";
+import { cn } from "../lib/cn";
+
+const SIZE_CLASS = {
+  small: "max-w-md",
+  large: "max-w-2xl",
+} as const;
 
 interface Props {
   isOpen: boolean;
   onClose: () => void;
   title: string;
   children: React.ReactNode;
+  size?: keyof typeof SIZE_CLASS;
 }
 
-export default function Modal({ isOpen, onClose, title, children }: Props) {
+export default function Modal({ isOpen, onClose, title, children, size = "small" }: Props) {
   const handleKeyDown = useCallback(
     (event: KeyboardEvent) => {
       if (event.key === "Escape") {
@@ -40,8 +47,13 @@ export default function Modal({ isOpen, onClose, title, children }: Props) {
       onClick={onClose}
     >
       <div
-        className="bg-surface-overlay border border-border rounded-xl shadow-card-active
-                   w-full max-w-md flex flex-col font-sans animate-node-in"
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+        className={cn(
+          "bg-surface-overlay border border-border rounded-xl shadow-card-active w-full max-h-[85vh] flex flex-col font-sans animate-node-in",
+          SIZE_CLASS[size],
+        )}
         onClick={(event) => event.stopPropagation()}
       >
         <div className="flex items-center justify-between px-5 py-4 border-b border-border shrink-0">
@@ -50,6 +62,7 @@ export default function Modal({ isOpen, onClose, title, children }: Props) {
           </span>
           <button
             onClick={onClose}
+            aria-label="Close"
             className="text-foreground-muted hover:text-foreground
                        bg-transparent border-none cursor-pointer transition-colors"
           >
@@ -57,7 +70,7 @@ export default function Modal({ isOpen, onClose, title, children }: Props) {
           </button>
         </div>
 
-        <div className="px-5 py-4">{children}</div>
+        <div className="cc-scroll overflow-y-auto px-5 py-4">{children}</div>
       </div>
     </div>
   );

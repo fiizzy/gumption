@@ -3,7 +3,7 @@
 import { getBezierPath, EdgeLabelRenderer, type EdgeProps } from "@xyflow/react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { faCodeBranch } from "@fortawesome/free-solid-svg-icons";
-import { BranchEdge, AnchorEdge } from "../types";
+import type { BranchEdge } from "../types";
 
 const BRANCH_ICON_SIZE = 18;
 
@@ -17,16 +17,13 @@ export function CanvasEdgeMarkerDefs() {
         <marker id="arrow-branch" markerWidth="7" markerHeight="5" refX="5" refY="2.5" orient="auto">
           <polygon points="0 0, 7 2.5, 0 5" fill="var(--color-connector)" />
         </marker>
-        <marker id="arrow-anchor" markerWidth="7" markerHeight="5" refX="5" refY="2.5" orient="auto">
-          <polygon points="0 0, 7 2.5, 0 5" fill="var(--color-accent)" />
-        </marker>
       </defs>
     </svg>
   );
 }
 
 export function BranchEdgeComponent({
-  sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition,
+  id, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition,
 }: EdgeProps<BranchEdge>) {
   const [edgePath, labelX, labelY] = getBezierPath({ sourceX, sourceY, sourcePosition, targetX, targetY, targetPosition });
   return (
@@ -43,6 +40,7 @@ export function BranchEdgeComponent({
       {/* Midpoint branch glyph — visually distinguishes this from a plain line */}
       <EdgeLabelRenderer>
         <div
+          data-edge-id={id}
           className="absolute flex items-center justify-center rounded-full
                      bg-surface-overlay border border-border pointer-events-none"
           style={{
@@ -57,24 +55,5 @@ export function BranchEdgeComponent({
         </div>
       </EdgeLabelRenderer>
     </>
-  );
-}
-
-// A user-drawn connector from a chat node's anchor handle to a shape or
-// text element. Deliberately its own marker/style, kept visually distinct
-// from the (non-deletable, non-reconnectable) branch connector above.
-export function AnchorEdgeComponent({
-  sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, selected,
-}: EdgeProps<AnchorEdge>) {
-  const [edgePath] = getBezierPath({ sourceX, sourceY, sourcePosition, targetX, targetY, targetPosition });
-  return (
-    <path
-      d={edgePath}
-      stroke="var(--color-accent)"
-      strokeOpacity={selected ? 1 : 0.85}
-      strokeWidth={selected ? 2.5 : 2}
-      fill="none"
-      markerEnd="url(#arrow-anchor)"
-    />
   );
 }

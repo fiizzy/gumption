@@ -15,8 +15,38 @@ fn set_window_theme(window: tauri::WebviewWindow, theme: String) -> Result<(), S
   window.set_theme(parsed).map_err(|e| e.to_string())
 }
 
+// Apps launched from Finder or the Dock inherit launchd's bare PATH
+// (/usr/bin:/bin:/usr/sbin:/sbin), so spawning `claude` fails with
+// "No such file or directory" even though it works from a terminal. Ask the
+// user's login shell for its PATH instead, the way terminals see it. The
+// markers fence off anything the shell's rc files print.
+#[cfg(unix)]
+fn inherit_login_shell_path() {
+  const START: &str = "__GUMPTION_PATH_START__";
+  const END: &str = "__GUMPTION_PATH_END__";
+  let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
+  let Ok(output) = std::process::Command::new(shell)
+    .args(["-ilc", &format!("printf '{START}%s{END}' \"$PATH\"")])
+    .stdin(std::process::Stdio::null())
+    .output()
+  else {
+    return;
+  };
+  let stdout = String::from_utf8_lossy(&output.stdout);
+  let path = stdout
+    .split_once(START)
+    .and_then(|(_, rest)| rest.split_once(END))
+    .map(|(path, _)| path);
+  if let Some(path) = path.filter(|path| !path.is_empty()) {
+    std::env::set_var("PATH", path);
+  }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+  #[cfg(unix)]
+  inherit_login_shell_path();
+
   tauri::Builder::default()
     .plugin(tauri_plugin_shell::init())
     .plugin(tauri_plugin_fs::init())

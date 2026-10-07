@@ -23,7 +23,19 @@ const RESPONSE_STYLE_INSTRUCTIONS: Record<ResponseStyle, string> = {
 };
 
 // Each mode's argument list must match its scoped command in
-// src-tauri/capabilities/default.json exactly (same order, same literals).
+// src-tauri/capabilities/claude-{unix,windows}.json exactly (same order,
+// same literals).
+//
+// `claude -p` waits for stdin to close before answering, and the shell
+// plugin keeps stdin open with no way to close it, so on macOS and Linux
+// Claude runs through sh with stdin redirected from /dev/null.
+const STDIN_CLOSING_WRAPPER_ARGUMENTS = ["-c", 'exec claude "$@" </dev/null', "claude"];
+const WINDOWS_USER_AGENT_PATTERN = /windows/i;
+
+function stdinClosingWrapper(): string[] {
+  return WINDOWS_USER_AGENT_PATTERN.test(navigator.userAgent) ? [] : STDIN_CLOSING_WRAPPER_ARGUMENTS;
+}
+
 const STREAM_ARGUMENTS = ["--output-format", "stream-json", "--verbose", "--include-partial-messages", "--no-session-persistence"];
 const READ_ONLY_DISALLOWED_TOOLS = "Bash,Edit,Write,NotebookEdit";
 
@@ -102,7 +114,7 @@ export function askClaude({
   // second harness (e.g. Codex) is actually wired up.
   const command = Command.create(
     mode.name,
-    ["-p", fullPrompt, ...STREAM_ARGUMENTS, ...mode.arguments, "--append-system-prompt", `${mode.context} ${RESPONSE_STYLE_INSTRUCTIONS[responseStyle]}`],
+    [...stdinClosingWrapper(), "-p", fullPrompt, ...STREAM_ARGUMENTS, ...mode.arguments, "--append-system-prompt", `${mode.context} ${RESPONSE_STYLE_INSTRUCTIONS[responseStyle]}`],
     workingFolder && mode.name !== "claude-code" ? { cwd: workingFolder } : undefined,
   );
 

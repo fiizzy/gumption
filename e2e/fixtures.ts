@@ -43,7 +43,7 @@ function installTauriStub() {
     invoke: async (command: string, args: StubWindow["__AI_CALLS"][number]) => {
       if (command !== "plugin:shell|spawn") throw new Error(`not running in Tauri: ${command}`);
       stubWindow.__AI_CALLS.push(args);
-      const prompt = args.args[1].split("\n").pop()!.slice(0, 60);
+      const prompt = args.args[args.args.indexOf("-p") + 1].split("\n").pop()!.slice(0, 60);
       const reply = stubWindow.__AI_RESULT || `Mock reply: ${prompt}`;
       let index = 0;
       const send = (message: unknown) =>

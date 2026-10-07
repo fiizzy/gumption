@@ -1,0 +1,95 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "claude-unix",
+  "description": "Runs the Claude Code CLI through sh so its stdin is /dev/null: claude -p waits for stdin to close, and the shell plugin keeps it open forever.",
+  "windows": [
+    "main"
+  ],
+  "platforms": [
+    "macOS",
+    "linux"
+  ],
+  "permissions": [
+    {
+      "identifier": "shell:allow-spawn",
+      "allow": [
+        {
+          "name": "claude-code",
+          "cmd": "sh",
+          "args": [
+            "-c",
+            "exec claude \"$@\" </dev/null",
+            "claude",
+            "-p",
+            {
+              "validator": "[\\s\\S]*"
+            },
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--include-partial-messages",
+            "--no-session-persistence",
+            "--tools=",
+            "--append-system-prompt",
+            {
+              "validator": "[\\s\\S]*"
+            }
+          ],
+          "sidecar": false
+        },
+        {
+          "name": "claude-code-readonly",
+          "cmd": "sh",
+          "args": [
+            "-c",
+            "exec claude \"$@\" </dev/null",
+            "claude",
+            "-p",
+            {
+              "validator": "[\\s\\S]*"
+            },
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--include-partial-messages",
+            "--no-session-persistence",
+            "--disallowedTools",
+            "Bash,Edit,Write,NotebookEdit",
+            "--append-system-prompt",
+            {
+              "validator": "[\\s\\S]*"
+            }
+          ],
+          "sidecar": false
+        },
+        {
+          "name": "claude-code-agent",
+          "cmd": "sh",
+          "args": [
+            "-c",
+            "exec claude \"$@\" </dev/null",
+            "claude",
+            "-p",
+            {
+              "validator": "[\\s\\S]*"
+            },
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--include-partial-messages",
+            "--no-session-persistence",
+            "--permission-mode",
+            "acceptEdits",
+            "--disallowedTools",
+            "Bash",
+            "--append-system-prompt",
+            {
+              "validator": "[\\s\\S]*"
+            }
+          ],
+          "sidecar": false
+        }
+      ]
+    }
+  ]
+}

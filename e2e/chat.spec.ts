@@ -19,7 +19,7 @@ test.describe("chat cards", () => {
     await expect(conversationCards(page)).toHaveCount(2);
     await expect(page.locator(".react-flow__edge")).toHaveCount(1);
     const calls = await page.evaluate(() => (window as unknown as { __AI_CALLS: { args: string[] }[] }).__AI_CALLS);
-    expect(calls[1].args[1]).toContain("Earlier in this thread");
+    expect(calls[1].args[calls[1].args.indexOf("-p") + 1]).toContain("Earlier in this thread");
   });
 
   test("no working folder means a plain chat with tools off", async ({ canvas: page }) => {

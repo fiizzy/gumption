@@ -1,4 +1,11 @@
 import { test, expect, draw, renderedNodes, storedState, expectSavedNodes } from "./fixtures";
+import type { Page } from "@playwright/test";
+
+const projectMenu = (page: Page) => page.getByRole("button", { name: "Switch project" });
+const openProjectMenu = async (page: Page) => {
+  await projectMenu(page).click();
+  return page.getByRole("menu", { name: "Projects" });
+};
 
 test.describe("projects and persistence", () => {
   test("canvas, viewport and theme survive a reload", async ({ canvas: page }) => {
@@ -20,54 +27,68 @@ test.describe("projects and persistence", () => {
     await expect(page.getByRole("button", { name: "Undo (Ctrl+Z)" })).toBeDisabled();
   });
 
-  test("create, switch, rename and delete projects; replies land in their own project", async ({ canvas: page }) => {
-    const sidebar = page.getByRole("navigation", { name: "Projects" });
+  test("create, switch, rename and delete projects from the project menu; each keeps its own canvas", async ({ canvas: page }) => {
     await draw(page, "r", { x: 560, y: 250 }, { x: 760, y: 380 });
 
-    await page.getByTitle("New project").click();
+    let menu = await openProjectMenu(page);
+    await menu.getByRole("menuitem", { name: "New project…" }).click();
     await page.getByPlaceholder("Untitled project").fill("Research");
     await page.getByRole("button", { name: "Create project" }).click();
-    await expect(sidebar.locator('[aria-current="page"]')).toContainText("Research");
+    await expect(projectMenu(page)).toHaveText("Research");
     expect(await renderedNodes(page)).toHaveLength(0);
 
-    await page.evaluate(() => ((window as unknown as { __AI_DELAY: number }).__AI_DELAY = 1200));
-    const input = page.getByPlaceholder(/conversation|thread/);
-    await input.fill("Question in Research");
-    await input.press("Enter");
-    await sidebar.getByTitle("Untitled project", { exact: true }).click();
+    await draw(page, "o", { x: 900, y: 450 }, { x: 1000, y: 520 });
+    menu = await openProjectMenu(page);
+    await expect(menu.getByRole("menuitemradio", { name: "Research" })).toHaveAttribute("aria-checked", "true");
+    await menu.getByRole("menuitemradio", { name: "Untitled project" }).click();
+    await expect(projectMenu(page)).toHaveText("Untitled project");
     await expect(page.locator(".react-flow__node-shapeElement")).toHaveCount(1);
-    await page.waitForTimeout(1500);
-    expect(await renderedNodes(page)).toHaveLength(1);
-    await sidebar.getByTitle("Research", { exact: true }).click();
-    await expect(page.locator(".react-flow__node-conversation")).toContainText("Mock reply: Question in Research");
+    expect((await renderedNodes(page))[0].text).toBe("");
+    menu = await openProjectMenu(page);
+    await menu.getByRole("menuitemradio", { name: "Research" }).click();
+    await expect(page.locator(".react-flow__node-shapeElement")).toHaveCount(1);
 
-    await sidebar.getByTitle("Research", { exact: true }).hover();
-    await page.getByRole("button", { name: "Rename Research" }).click();
-    await page.keyboard.press("Control+a");
-    await page.keyboard.type("Deep research");
-    await page.keyboard.press("Enter");
+    menu = await openProjectMenu(page);
+    await menu.getByRole("menuitem", { name: "Rename project…" }).click();
+    const titleInput = page.getByRole("textbox", { name: "Project title" });
+    await expect(titleInput).toBeFocused();
+    await titleInput.fill("Deep research");
+    await titleInput.press("Enter");
+    await expect(projectMenu(page)).toHaveText("Deep research");
     await expect.poll(async () => (await storedState(page)).index.projects.map((project) => project.title).sort()).toEqual(["Deep research", "Untitled project"]);
 
-    await sidebar.getByTitle("Deep research", { exact: true }).hover();
-    await page.getByRole("button", { name: "Delete Deep research" }).click();
+    menu = await openProjectMenu(page);
+    await menu.getByRole("menuitem", { name: "Delete project…" }).click();
     await page.getByRole("dialog").getByRole("button", { name: "Delete project" }).click();
+    await expect(projectMenu(page)).toHaveText("Untitled project");
     await expect(page.locator(".react-flow__node-shapeElement")).toHaveCount(1);
     const state = await storedState(page);
     expect(state.index.projects.map((project) => project.title)).toEqual(["Untitled project"]);
     expect(await page.evaluate(() => Object.keys(localStorage).filter((key) => key.endsWith(".json")).length)).toBe(2);
 
-    await sidebar.getByTitle("Untitled project", { exact: true }).hover();
-    await page.getByRole("button", { name: "Delete Untitled project" }).click();
+    menu = await openProjectMenu(page);
+    await menu.getByRole("menuitem", { name: "Delete project…" }).click();
     await page.getByRole("dialog").getByRole("button", { name: "Delete project" }).click();
     await expect.poll(async () => (await storedState(page)).index.projects.length).toBe(1);
     expect(await renderedNodes(page)).toHaveLength(0);
   });
 
-  test("working folders are desktop-only (no picker in the browser)", async ({ canvas: page }) => {
-    await page.getByTitle("New project").click();
-    await expect(page.getByText("Working folder")).toHaveCount(0);
-    await page.keyboard.press("Escape");
-    await page.getByRole("navigation", { name: "Projects" }).getByTitle("Untitled project", { exact: true }).hover();
-    await expect(page.getByRole("button", { name: /working folder/i })).toHaveCount(0);
+  test("codebase folders are desktop-only (no picker in the browser)", async ({ canvas: page }) => {
+    const menu = await openProjectMenu(page);
+    await expect(menu.getByRole("menuitem", { name: /codebase/i })).toHaveCount(0);
+    await menu.getByRole("menuitem", { name: "New project…" }).click();
+    await expect(page.getByText("Codebase (optional)")).toHaveCount(0);
+  });
+
+  test("the chat panel floats over the canvas, collapses to a rail and comes back", async ({ canvas: page }) => {
+    const chat = page.getByRole("complementary", { name: "Chat" });
+    // The canvas is full-bleed underneath the panel, not pushed aside by it.
+    expect((await page.locator(".react-flow").boundingBox())!.x).toBe(0);
+    await expect(chat.getByPlaceholder(/diagram/)).toBeVisible();
+    await page.getByRole("button", { name: "Hide chat" }).click();
+    await expect(chat.getByPlaceholder(/diagram/)).toHaveCount(0);
+    await expect(projectMenu(page)).toHaveCount(0);
+    await page.getByRole("button", { name: "Show chat" }).first().click();
+    await expect(chat.getByPlaceholder(/diagram/)).toBeVisible();
   });
 });

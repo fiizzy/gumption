@@ -1,19 +1,3 @@
-// Sentinel value — "no tint", the card just uses the app's normal
-// theme-aware surface/foreground color instead of a flat background.
-export const DEFAULT_COLOR = "#f8fafc";
-
-// Chat-card tints.
-export const SWATCHES = [
-  { label: "Default", value: DEFAULT_COLOR },
-  { label: "Blue", value: "#93c5fd" },
-  { label: "Green", value: "#86efac" },
-  { label: "Amber", value: "#fcd34d" },
-  { label: "Red", value: "#fca5a5" },
-  { label: "Violet", value: "#c4b5fd" },
-  { label: "Pink", value: "#f9a8d4" },
-  { label: "Orange", value: "#fdba74" },
-];
-
 // Drawing-element colors are stored as plain CSS color values. The two
 // "theme" entries are real CSS keywords rather than sentinels — elements
 // render inside a `text-foreground` wrapper, so `currentColor` follows the
@@ -42,18 +26,30 @@ export const BACKGROUND_SWATCHES = [
   { label: "Violet", value: "#845ef759" },
 ];
 
-// Perceived-brightness check (YIQ) — decides whether a solid tint needs
-// dark or light text/borders on top of it to stay legible.
-export function isLightColor(hex: string): boolean {
-  const red = parseInt(hex.slice(1, 3), 16);
-  const green = parseInt(hex.slice(3, 5), 16);
-  const blue = parseInt(hex.slice(5, 7), 16);
-  const yiq = (red * 299 + green * 587 + blue * 114) / 1000;
-  return yiq >= 140;
-}
+// Quieter tints for the diagrams the agent draws. Colour there carries
+// meaning (one tint per lane or concern across a dozen shapes), so it has
+// to sit behind the labels rather than compete with them.
+export const DIAGRAM_FILL_SWATCHES = [
+  { label: "Red", value: "#e07a7340" },
+  { label: "Green", value: "#6cbf8440" },
+  { label: "Blue", value: "#6a9fe040" },
+  { label: "Yellow", value: "#d9b85c40" },
+  { label: "Violet", value: "#a28ce040" },
+];
 
 const HEX_COLOR_PATTERN = /^#[0-9a-f]{6}([0-9a-f]{2})?$/i;
+const HEX_WITHOUT_ALPHA_LENGTH = 7;
+const MAX_ALPHA_BYTE = 255;
 
 export function isHexColor(value: string): boolean {
   return HEX_COLOR_PATTERN.test(value);
+}
+
+// Scales the alpha of a translucent hex colour; opaque and non-hex values
+// come back unchanged.
+export function scaleHexAlpha(color: string, factor: number): string {
+  if (!isHexColor(color) || color.length === HEX_WITHOUT_ALPHA_LENGTH) return color;
+  const alpha = parseInt(color.slice(HEX_WITHOUT_ALPHA_LENGTH), 16) / MAX_ALPHA_BYTE;
+  const scaled = Math.round(Math.min(1, alpha * factor) * MAX_ALPHA_BYTE);
+  return `${color.slice(0, HEX_WITHOUT_ALPHA_LENGTH)}${scaled.toString(16).padStart(2, "0")}`;
 }

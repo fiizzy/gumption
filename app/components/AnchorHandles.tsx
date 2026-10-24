@@ -6,7 +6,7 @@ import { cn } from "../lib/cn";
 
 // Side-midpoint-only anchor points (the corners are reserved for resize
 // handles instead — see ResizeHandles — to avoid the two systems fighting
-// over the same 4 spots). One handle per side: CanvasChat runs xyflow in
+// over the same 4 spots). One handle per side: the Whiteboard runs xyflow in
 // loose connection mode, so each handle works as both start and end.
 const ANCHOR_POINTS = [
   { side: "top", position: Position.Top, top: "0%", left: "50%" },
@@ -32,7 +32,7 @@ interface Props {
 
 // Shared by every bindable element type — dragging from one of these to
 // another element's anchor creates an arrow bound at both ends (see
-// CanvasChat's onConnect). Pointer events are forced on because transparent
+// the Whiteboard's onConnect). Pointer events are forced on because transparent
 // shapes switch their wrapper's pointer events off.
 export default function AnchorHandles({ visible }: Props) {
   const handleStyle = (top: string, left: string): CSSProperties => ({

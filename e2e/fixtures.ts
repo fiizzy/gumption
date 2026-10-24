@@ -17,19 +17,36 @@ export interface RenderedNode {
 }
 
 // Stubs Tauri's IPC so the streamed "claude" process replies with canned
-// stream-json events (in a few chunks over `window.__AI_DELAY` ms), the way
-// the real CLI does. `isTauri()` stays false, so the app persists to
-// localStorage — each test gets a fresh browser context, hence fresh storage.
+// stream-json events (in a handful of chunks over `window.__AI_DELAY` ms),
+// the way the real CLI does. `isTauri()` stays false, so the app persists
+// to localStorage — each test gets a fresh browser context, hence fresh
+// storage. Set `__AI_RESULT` to the text Claude should stream back,
+// `__AI_ERROR` to make the run fail with that text, `__AI_TOOL_FILE` to have
+// it "read" a file first, and watch `__AI_CALLS` and `__AI_KILLS` for what
+// the app asked of it. The launch-time `claude --version` check answers with
+// the localStorage entry `test:claude-version` (path and version lines; empty
+// means not installed), defaulting to a current native install.
 function installTauriStub() {
-  type StubWindow = Window & Record<string, unknown> & {
-    __AI_DELAY: number;
-    __AI_RESULT?: string;
-    __AI_CALLS: { program: string; args: string[]; options: unknown; onEvent: { id: number } }[];
-  };
+  type SpawnArguments = { program: string; args: string[]; options: unknown; onEvent: { id: number } };
+  type StubWindow = Window &
+    Record<string, unknown> & {
+      __AI_DELAY: number;
+      __AI_RESULT?: string;
+      __AI_ERROR?: string;
+      __AI_TOOL_FILE?: string;
+      __AI_CALLS: SpawnArguments[];
+      __AI_KILLS: { pid: number }[];
+    };
   const stubWindow = window as unknown as StubWindow;
   stubWindow.__AI_DELAY = 300;
   stubWindow.__AI_CALLS = [];
-  const chunkCount = 4;
+  stubWindow.__AI_KILLS = [];
+  const chunkCount = 8;
+  const defaultVersionOutput = "/usr/local/bin/claude\n2.1.310 (Claude Code)";
+  const killedPids = new Set<number>();
+  let nextPid = 4242;
+  const sleep = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+
   stubWindow.__TAURI_INTERNALS__ = {
     metadata: { currentWindow: { label: "main" }, currentWebview: { windowLabel: "main", label: "main" } },
     transformCallback: (callback: unknown) => {
@@ -40,29 +57,68 @@ function installTauriStub() {
     unregisterCallback: (id: number) => {
       delete stubWindow[`_${id}`];
     },
-    invoke: async (command: string, args: StubWindow["__AI_CALLS"][number]) => {
+    invoke: async (command: string, args: SpawnArguments & { pid: number }) => {
+      if (command === "plugin:shell|kill") {
+        stubWindow.__AI_KILLS.push({ pid: args.pid });
+        killedPids.add(args.pid);
+        return;
+      }
       if (command !== "plugin:shell|spawn") throw new Error(`not running in Tauri: ${command}`);
+      const pid = nextPid++;
+      if (args.program === "claude-version") {
+        const versionOutput = localStorage.getItem("test:claude-version") ?? defaultVersionOutput;
+        setTimeout(() => {
+          let eventIndex = 0;
+          const sendVersion = (message: unknown) =>
+            (stubWindow[`_${args.onEvent.id}`] as ((raw: unknown) => void) | undefined)?.({ index: eventIndex++, message });
+          versionOutput.split("\n").filter(Boolean).forEach((line) => sendVersion({ event: "Stdout", payload: line }));
+          sendVersion({ event: "Terminated", payload: { code: versionOutput ? 0 : 127, signal: null } });
+        }, 0);
+        return pid;
+      }
       stubWindow.__AI_CALLS.push(args);
       const prompt = args.args[args.args.indexOf("-p") + 1].split("\n").pop()!.slice(0, 60);
       const reply = stubWindow.__AI_RESULT || `Mock reply: ${prompt}`;
+      const toolFile = stubWindow.__AI_TOOL_FILE;
       let index = 0;
       const send = (message: unknown) =>
         (stubWindow[`_${args.onEvent.id}`] as ((raw: unknown) => void) | undefined)?.({ index: index++, message });
       const emit = (event: unknown) => send({ event: "Stdout", payload: `${JSON.stringify(event)}\n` });
       const chunkLength = Math.ceil(reply.length / chunkCount);
+      const stepDelay = stubWindow.__AI_DELAY / chunkCount;
       void (async () => {
         emit({ type: "stream_event", event: { type: "message_start" } });
+        if (stubWindow.__AI_ERROR) {
+          await sleep(stepDelay);
+          emit({ type: "result", is_error: true, result: stubWindow.__AI_ERROR });
+          send({ event: "Terminated", payload: { code: 1, signal: null } });
+          return;
+        }
+        if (toolFile) {
+          emit({ type: "stream_event", event: { type: "content_block_start", content_block: { type: "tool_use", name: "Read" } } });
+          emit({
+            type: "stream_event",
+            event: { type: "content_block_delta", delta: { type: "input_json_delta", partial_json: JSON.stringify({ file_path: toolFile }) } },
+          });
+          await sleep(stepDelay * 2);
+          emit({ type: "stream_event", event: { type: "message_start" } });
+        }
         for (let start = 0; start < reply.length; start += chunkLength) {
-          await new Promise((resolve) => setTimeout(resolve, stubWindow.__AI_DELAY / chunkCount));
+          await sleep(stepDelay);
+          if (killedPids.has(pid)) break;
           emit({
             type: "stream_event",
             event: { type: "content_block_delta", delta: { type: "text_delta", text: reply.slice(start, start + chunkLength) } },
           });
         }
+        if (killedPids.has(pid)) {
+          send({ event: "Terminated", payload: { code: null, signal: 9 } });
+          return;
+        }
         emit({ type: "result", is_error: false, result: reply });
         send({ event: "Terminated", payload: { code: 0, signal: null } });
       })();
-      return 4242;
+      return pid;
     },
   };
 }
@@ -74,7 +130,7 @@ export const test = base.extend<{ canvas: Page }>({
     await page.addInitScript(installTauriStub);
     await page.goto("/");
     await page.waitForSelector(".react-flow__pane");
-    await expect(page.getByRole("navigation", { name: "Projects" }).locator('[aria-current="page"]')).toBeVisible();
+    await expect(page.getByRole("button", { name: "Switch project" })).toContainText(/\S/);
     await use(page);
     expect(pageErrors, "uncaught page errors").toEqual([]);
   },
@@ -119,7 +175,7 @@ export interface StoredNode {
 }
 
 export interface StoredState {
-  index: { projects: { id: string; title: string; workingFolder: string | null; fileAccess: string }[]; lastOpenedProjectId: string | null };
+  index: { projects: { id: string; title: string; workingFolder: string | null }[]; lastOpenedProjectId: string | null };
   documents: Record<string, { nodes: StoredNode[]; viewport: unknown } | null>;
 }
 

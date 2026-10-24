@@ -1,5 +1,5 @@
-import CanvasChat from './components/CanvasChat';
+import Whiteboard from './components/Whiteboard';
 
 export default function Home() {
-  return <CanvasChat />;
+  return <Whiteboard />;
 }

@@ -45,7 +45,7 @@ test.describe("files, export and images", () => {
       page.getByRole("dialog").getByRole("button", { name: "Open file" }).click(),
     ]);
     await chooser.setFiles(badPath);
-    await expect(page.getByRole("alert").filter({ hasText: "isn't a Canvas Chat document" })).toBeVisible();
+    await expect(page.getByRole("alert").filter({ hasText: "isn't a Gumption whiteboard" })).toBeVisible();
     await expect(page.locator(".react-flow__node")).toHaveCount(3);
   });
 

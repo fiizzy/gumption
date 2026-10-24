@@ -1,5 +1,5 @@
 {
-  "name": "canvas-chat",
+  "name": "gumption",
   "version": "0.1.0",
   "private": true,
   "scripts": {
@@ -25,9 +25,6 @@
     "next": "16.3.1",
     "react": "19.2.8",
     "react-dom": "19.2.8",
-    "react-markdown": "^10.1.0",
-    "rehype-highlight": "^7.0.2",
-    "remark-gfm": "^4.0.1",
     "roughjs": "^4.6.6"
   },
   "devDependencies": {

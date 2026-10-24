@@ -2,7 +2,7 @@
 
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { faSlash, faPalette } from "@fortawesome/free-solid-svg-icons";
-import { SWATCHES, TRANSPARENT_COLOR, isHexColor } from "../lib/color";
+import { TRANSPARENT_COLOR, isHexColor } from "../lib/color";
 import { cn } from "../lib/cn";
 
 const HEX_WITHOUT_ALPHA_LENGTH = 7;
@@ -20,12 +20,12 @@ interface Swatch {
 interface Props {
   color: string;
   onChange: (color: string) => void;
-  swatches?: Swatch[];
+  swatches: Swatch[];
   allowCustom?: boolean;
   className?: string;
 }
 
-export default function ColorSwatches({ color, onChange, swatches = SWATCHES, allowCustom = false, className }: Props) {
+export default function ColorSwatches({ color, onChange, swatches, allowCustom = false, className }: Props) {
   const isCustomColor = !swatches.some((swatch) => swatch.value === color);
   return (
     <div className={cn("flex gap-1.5 flex-wrap items-center text-foreground", className)}>

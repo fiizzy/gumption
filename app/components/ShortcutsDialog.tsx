@@ -37,6 +37,14 @@ const SHORTCUT_GROUPS: { title: string; shortcuts: [string, string][] }[] = [
     ],
   },
   {
+    title: "Whiteboard",
+    shortcuts: [
+      ["Focus the command bar", "/"],
+      ["Draw what you typed", "Enter"],
+      ["Leave the command bar", "Esc"],
+    ],
+  },
+  {
     title: "View & file",
     shortcuts: [
       ["Zoom in / out", "Ctrl+= / Ctrl+−, or Ctrl+scroll"],

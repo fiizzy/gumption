@@ -57,11 +57,8 @@ interface Props {
   // Every selected element's data — or, with nothing selected, a prototype
   // for the active drawing tool so the style can be picked before drawing.
   sources: StyleSource[];
-  cardColor: string | null;
-  cardSwatches: { label: string; value: string }[];
   hasSelection: boolean;
   onStyleChange: (patch: Partial<ElementStyle>) => void;
-  onCardColorChange: (color: string) => void;
   onBringToFront: () => void;
   onBringForward: () => void;
   onSendBackward: () => void;
@@ -78,11 +75,8 @@ function readStyleValue<Key extends keyof ElementStyle>(sources: StyleSource[], 
 
 export default function StylePanel({
   sources,
-  cardColor,
-  cardSwatches,
   hasSelection,
   onStyleChange,
-  onCardColorChange,
   onBringToFront,
   onBringForward,
   onSendBackward,
@@ -272,12 +266,6 @@ export default function StylePanel({
             onChange={(event) => onStyleChange({ opacity: Number(event.target.value) })}
             className="w-full accent-accent cursor-pointer"
           />
-        </Section>
-      )}
-
-      {cardColor !== null && (
-        <Section title="Card color">
-          <ColorSwatches color={cardColor} swatches={cardSwatches} onChange={onCardColorChange} />
         </Section>
       )}
 

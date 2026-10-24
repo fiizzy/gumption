@@ -72,18 +72,18 @@ test.describe("selection and editing", () => {
   test("copy, paste at cursor, cut, and pasting outside text", async ({ canvas: page }) => {
     await draw(page, "r", { x: 560, y: 250 }, { x: 760, y: 380 });
     await draw(page, "o", { x: 900, y: 250 }, { x: 1060, y: 380 });
-    await page.keyboard.press("Control+a");
+    await page.keyboard.press("ControlOrMeta+a");
     expect((await renderedNodes(page)).every((node) => node.selected)).toBe(true);
-    await page.keyboard.press("Control+c");
+    await page.keyboard.press("ControlOrMeta+c");
     await page.mouse.move(1100, 650);
-    await page.keyboard.press("Control+v");
+    await page.keyboard.press("ControlOrMeta+v");
     let nodes = await renderedNodes(page);
     const pasted = nodes.filter((node) => node.selected);
     expect(nodes).toHaveLength(4);
     const pastedCenterX = pasted.reduce((sum, node) => sum + node.rect.x + node.rect.w / 2, 0) / pasted.length;
     expect(Math.abs(pastedCenterX - 1100)).toBeLessThan(120);
 
-    await page.keyboard.press("Control+x");
+    await page.keyboard.press("ControlOrMeta+x");
     expect(await renderedNodes(page)).toHaveLength(2);
 
     await page.evaluate(() => {

@@ -1,11 +1,6 @@
-import type { Node, Edge } from '@xyflow/react';
+import type { Node } from '@xyflow/react';
 
 export type ShapeKind = 'rectangle' | 'ellipse' | 'diamond';
-
-// App-level UI state, not per-node data — which coding harness new chat
-// nodes would use. Only 'claude' is actually wired up to app/lib/ai.ts
-// today; 'codex' is a non-functional placeholder for a future harness.
-export type Harness = 'claude' | 'codex';
 
 export type StrokeStyle = 'solid' | 'dashed' | 'dotted';
 export type FillStyle = 'hachure' | 'cross-hatch' | 'solid';
@@ -65,42 +60,12 @@ export type TextStyle = Pick<
   ElementStyle,
   'strokeColor' | 'fontSize' | 'fontFamily' | 'fontWeight' | 'opacity'
 >;
+export type PictogramStyle = Pick<
+  ElementStyle,
+  'strokeColor' | 'strokeWidth' | 'sloppiness' | 'opacity' | 'fontSize' | 'fontFamily'
+>;
 
-// ── Persisted shape — what actually lives in CanvasChat's `nodes` state ──
-//
-// `branchParentId` is deliberately NOT named `parentId` — xyflow reserves
-// `Node.parentId` for its own sub-flow/grouping nesting feature, and
-// reusing that name would silently collide with it.
-export type ResponseStyle = 'concise' | 'detailed';
-
-// The terminal chat style's color scheme, chosen per thread.
-export type TerminalTheme = 'green' | 'red' | 'blue' | 'mono';
-
-// What Claude may do in a project's working folder. 'ask' = the user hasn't
-// been asked yet; the first chat in the project prompts for it.
-export type FileAccess = 'ask' | 'readWrite' | 'readOnly' | 'none';
-
-export interface ConversationNodeData {
-  [key: string]: unknown;
-  prompt: string;
-  response: string;
-  // The reply length/depth the user asked for when sending this prompt.
-  responseStyle: ResponseStyle;
-  loading: boolean;
-  minimized: boolean;
-  // Card tint in the standard chat style.
-  color: string;
-  // Color scheme in the terminal chat style.
-  terminalTheme: TerminalTheme;
-  branchParentId: string | null;
-  width: number;
-  // Used only once the user has resized the card by hand; until then the
-  // card grows with its content (up to a cap) as the reply streams in.
-  height: number;
-  isHeightPinned: boolean;
-  // Meaningful on a thread's root card: the whole thread shows as a deck.
-  isThreadStacked: boolean;
-}
+// ── Persisted shape — what actually lives in the Whiteboard's `nodes` state ──
 
 // Height is intrinsic (the text wraps at `width` and grows downward), so
 // only the width is stored.
@@ -118,18 +83,35 @@ export interface ShapeElementData extends ShapeStyle {
   // Fixed per element so rough.js redraws the same wobble every render.
   seed: number;
   label: string;
+  // A quieter second line under the label. Older agent drawings put the
+  // defining file here; new ones write it as a side-note beside the shape.
+  // Kept as-is when the label is edited.
+  note: string;
 }
 
-// A straight line or arrow between two points, stored relative to the
+// A line or arrow through two or more points (hand-drawn lines have two;
+// the agent routes its connectors through bends), stored relative to the
 // node's own bounding box (top-left = position) so dragging the whole
-// node moves both endpoints together, same as any other xyflow node.
+// node moves every point together, same as any other xyflow node.
 export interface LineElementData extends LineStyle {
   [key: string]: unknown;
   kind: LineKind;
-  points: [Point, Point];
+  points: Point[];
   seed: number;
   startBinding: Binding | null;
   endBinding: Binding | null;
+}
+
+// A small hand-drawn picture from the pictogram library (see
+// lib/pictograms.ts) with its label underneath; the whiteboard agent uses
+// these for people, devices and physical things.
+export interface PictogramElementData extends PictogramStyle {
+  [key: string]: unknown;
+  icon: string;
+  width: number;
+  height: number;
+  seed: number;
+  label: string;
 }
 
 export interface ImageElementData {
@@ -140,59 +122,23 @@ export interface ImageElementData {
   opacity: number;
 }
 
-export type ConversationNode = Node<ConversationNodeData, 'conversation'>;
 export type TextElementNode = Node<TextElementData, 'textElement'>;
 export type ShapeElementNode = Node<ShapeElementData, 'shapeElement'>;
 export type LineElementNode = Node<LineElementData, 'lineElement'>;
 export type ImageElementNode = Node<ImageElementData, 'imageElement'>;
+export type PictogramElementNode = Node<PictogramElementData, 'pictogramElement'>;
 
-export type CanvasNode =
-  | ConversationNode
-  | TextElementNode
-  | ShapeElementNode
-  | LineElementNode
-  | ImageElementNode;
+export type CanvasNode = TextElementNode | ShapeElementNode | LineElementNode | ImageElementNode | PictogramElementNode;
 
 export type CanvasNodeType = CanvasNode['type'];
 
 export type ResizeHandleKind = 'corner' | 'edge';
 
 // ── Hydrated shape — the persisted data plus per-render derived values and
-// interaction callbacks, assembled fresh every render in CanvasChat and
+// interaction callbacks, assembled fresh every render in the Whiteboard and
 // handed to <ReactFlow>. Keeping callbacks out of the persisted state means
 // they can never go stale, since they're rebuilt from current component
-// state (activeNodeId, etc.) on every pass instead of being captured once
-// at node-creation time. ──
-// Present when the card belongs to a thread of 2+ cards.
-export interface ThreadSummary {
-  cardCount: number;
-  isStacked: boolean;
-  // When stacked and this card is on top: its 0-based place in the thread.
-  deckIndex: number | null;
-  // When on top of a deck: the tallest card in the thread, so flipping
-  // through the deck never changes its height.
-  deckHeight: number | null;
-}
-
-export interface HydratedConversationNodeData extends ConversationNodeData {
-  branchParentPromptPreview: string | undefined;
-  isBranchActive: boolean;
-  isBindingTarget: boolean;
-  thread: ThreadSummary | null;
-  // Live tool activity while the reply streams (e.g. "Read"), else null.
-  activity: string | null;
-  onToggleThreadStack: () => void;
-  onThreadColorChange: (color: string) => void;
-  onTerminalThemeChange: (theme: TerminalTheme) => void;
-  onThreadTerminalThemeChange: (theme: TerminalTheme) => void;
-  onShowAdjacentInDeck: (direction: -1 | 1) => void;
-  onToggleBranch: () => void;
-  onFocusNode: () => void;
-  onExpandNode: () => void;
-  onColorChange: (color: string) => void;
-  onToggleMinimize: () => void;
-  onResizeElement: (width: number, height: number, x: number, y: number) => void;
-}
+// state on every pass instead of being captured once at node-creation time. ──
 
 export interface HydratedTextElementData extends TextElementData {
   isEditing: boolean;
@@ -215,7 +161,7 @@ export interface HydratedShapeElementData extends ShapeElementData {
 
 export interface HydratedLineElementData extends LineElementData {
   // Reports a flow-space pointer position while an endpoint handle is
-  // dragged; CanvasChat owns snapping/binding and the resulting geometry.
+  // dragged; the Whiteboard owns snapping/binding and the resulting geometry.
   onEndpointDrag: (endpointIndex: 0 | 1, flowPoint: Point) => void;
   onEndpointDragEnd: () => void;
 }
@@ -225,26 +171,22 @@ export interface HydratedImageElementData extends ImageElementData {
   onResizeElement: (width: number, height: number, x: number, y: number) => void;
 }
 
-export type HydratedConversationNode = Node<HydratedConversationNodeData, 'conversation'>;
+export interface HydratedPictogramElementData extends PictogramElementData {
+  isBindingTarget: boolean;
+}
+
 export type HydratedTextElementNode = Node<HydratedTextElementData, 'textElement'>;
 export type HydratedShapeElementNode = Node<HydratedShapeElementData, 'shapeElement'>;
 export type HydratedLineElementNode = Node<HydratedLineElementData, 'lineElement'>;
 export type HydratedImageElementNode = Node<HydratedImageElementData, 'imageElement'>;
+export type HydratedPictogramElementNode = Node<HydratedPictogramElementData, 'pictogramElement'>;
 
 export type HydratedCanvasNode =
-  | HydratedConversationNode
   | HydratedTextElementNode
   | HydratedShapeElementNode
   | HydratedLineElementNode
-  | HydratedImageElementNode;
-
-export interface CanvasEdgeData {
-  [key: string]: unknown;
-}
-
-// Derived purely from each conversation node's branchParentId — never
-// user-created or persisted on its own.
-export type BranchEdge = Edge<CanvasEdgeData, 'branch'>;
+  | HydratedImageElementNode
+  | HydratedPictogramElementNode;
 
 export interface Viewport {
   x: number;

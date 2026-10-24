@@ -2,6 +2,7 @@ import rough from "roughjs";
 import type { Options } from "roughjs/bin/core";
 import type { FillStyle, LineKind, Point, ShapeKind, Sloppiness, StrokeStyle } from "../types";
 import { TRANSPARENT_COLOR } from "./color";
+import { PICTOGRAM_BOX_SIZE, getPictogramPathData, isPictogramName } from "./pictograms";
 
 const generator = rough.generator();
 
@@ -13,8 +14,11 @@ const SKETCHY_ROUGHNESS = 1;
 const SKETCHY_BOWING = 1;
 const CORNER_RADIUS_RATIO = 0.25;
 const MAX_CORNER_RADIUS = 32;
-const HACHURE_GAP_PER_STROKE_WIDTH = 4;
-const FILL_WEIGHT_PER_STROKE_WIDTH = 0.5;
+// Hatching stays fine at every stroke width: the gap grows only a little
+// with the stroke, and the hatch lines are a fraction of it.
+const HACHURE_GAP_BASE = 4;
+const HACHURE_GAP_PER_STROKE_WIDTH = 1;
+const FILL_WEIGHT_PER_STROKE_WIDTH = 0.3;
 const ARROWHEAD_BASE_LENGTH = 16;
 const ARROWHEAD_LENGTH_PER_STROKE_WIDTH = 2;
 const ARROWHEAD_MAX_SHARE_OF_LINE = 0.5;
@@ -50,7 +54,7 @@ function buildOptions({ seed, strokeWidth, strokeStyle, sloppiness }: StrokeOpti
     stroke: PLACEHOLDER_COLOR,
     fill: fill ? PLACEHOLDER_COLOR : undefined,
     fillStyle: fill?.fillStyle,
-    hachureGap: strokeWidth * HACHURE_GAP_PER_STROKE_WIDTH,
+    hachureGap: HACHURE_GAP_BASE + strokeWidth * HACHURE_GAP_PER_STROKE_WIDTH,
     fillWeight: strokeWidth * FILL_WEIGHT_PER_STROKE_WIDTH,
   };
 }
@@ -122,13 +126,25 @@ export function getShapePaths(input: ShapePathInput): RoughPath[] {
 
 interface LinePathInput extends StrokeOptions {
   kind: LineKind;
-  points: [Point, Point];
+  points: Point[];
 }
 
+// A line through its points, drawn as one stroke, with an arrowhead on the
+// last segment when it is an arrow.
 export function getLinePaths(input: LinePathInput): RoughPath[] {
-  const [start, end] = input.points;
+  const { points } = input;
+  if (points.length < 2) return [];
+  const start = points[points.length - 2];
+  const end = points[points.length - 1];
   const options = buildOptions(input);
-  const paths = toRoughPaths(generator.line(start.x, start.y, end.x, end.y, options));
+  const paths = toRoughPaths(
+    points.length === 2
+      ? generator.line(points[0].x, points[0].y, end.x, end.y, options)
+      : generator.linearPath(
+          points.map((point) => [point.x, point.y]),
+          options,
+        ),
+  );
   if (input.kind !== "arrow") return paths;
 
   const lineLength = Math.hypot(end.x - start.x, end.y - start.y);
@@ -147,4 +163,42 @@ export function getLinePaths(input: LinePathInput): RoughPath[] {
     ...paths,
     ...toRoughPaths(generator.linearPath([wing(1), [end.x, end.y], wing(-1)], headOptions), true),
   ];
+}
+
+interface PictogramPathInput {
+  icon: string;
+  size: number;
+  seed: number;
+  strokeWidth: number;
+  sloppiness: Sloppiness;
+}
+
+// A library pictogram scaled from its 100-unit box to `size`, one rough
+// path set per stroke so the renderer can reveal them one at a time.
+export function getPictogramPaths({ icon, size, seed, strokeWidth, sloppiness }: PictogramPathInput): RoughPath[] {
+  if (!isPictogramName(icon) || size <= 0) return [];
+  const scale = size / PICTOGRAM_BOX_SIZE;
+  const options = buildOptions({ seed, strokeWidth, strokeStyle: "solid", sloppiness });
+  return getPictogramPathData(icon).flatMap((path, index) =>
+    toRoughPaths(generator.path(scalePath(path, scale), { ...options, seed: seed + index }), true),
+  );
+}
+
+const PATH_NUMBER_PATTERN = /-?\d*\.?\d+/g;
+const PATH_ARC_FLAG_COMMAND = "A";
+
+// Scales every coordinate of a path; the two arc flags stay untouched.
+function scalePath(path: string, scale: number): string {
+  return path
+    .split(" ")
+    .reduce<{ parts: string[]; command: string; index: number }>(
+      (state, token) => {
+        if (/^[A-Za-z]$/.test(token)) return { parts: [...state.parts, token], command: token, index: 0 };
+        const isArcFlag = state.command === PATH_ARC_FLAG_COMMAND && (state.index === 3 || state.index === 4);
+        const scaled = isArcFlag ? token : token.replace(PATH_NUMBER_PATTERN, (number) => String(Number(number) * scale));
+        return { parts: [...state.parts, scaled], command: state.command, index: state.index + 1 };
+      },
+      { parts: [], command: "", index: 0 },
+    )
+    .parts.join(" ");
 }

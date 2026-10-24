@@ -49,13 +49,13 @@ test.describe("navigation and shortcuts", () => {
     await expect.poll(async () => beforeWheel - (await renderedNodes(page))[0].rect.y).toBeCloseTo(200, 0);
   });
 
-  test("shortcuts dialog, and the chat input releases focus to the canvas", async ({ canvas: page }) => {
+  test("shortcuts dialog, and the command bar releases focus to the canvas", async ({ canvas: page }) => {
     await page.keyboard.press("?");
     await expect(page.getByRole("dialog", { name: "Keyboard shortcuts" })).toBeVisible();
     await page.keyboard.press("Escape");
     await expect(page.getByRole("dialog")).toHaveCount(0);
 
-    const input = page.getByPlaceholder(/conversation|thread/);
+    const input = page.getByPlaceholder(/diagram/);
     await input.click();
     await input.type("draft");
     await page.mouse.click(1450, 600);

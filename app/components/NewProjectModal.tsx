@@ -55,7 +55,7 @@ export default function NewProjectModal({ isOpen, onClose, onCreate }: Props) {
         {isFolderPickerAvailable && (
           <div className="flex flex-col gap-1.5">
             <span className="text-[11px] font-semibold uppercase tracking-[0.06em] text-foreground-muted">
-              Working folder (optional)
+              Codebase (optional)
             </span>
             <div className="flex items-center gap-1.5">
               <button
@@ -89,7 +89,7 @@ export default function NewProjectModal({ isOpen, onClose, onCreate }: Props) {
               )}
             </div>
             <span className="text-[11px] text-foreground-muted">
-              Claude answers this project&apos;s chats from this folder and can read, search and edit files in it (no shell commands). Leave empty for plain chat.
+              Claude reads and searches this folder to draw how the code works, and never changes it. Leave empty to draw from descriptions alone.
             </span>
           </div>
         )}

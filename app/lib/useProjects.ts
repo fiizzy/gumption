@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import type { CanvasNode, FileAccess, Viewport } from "../types";
+import type { CanvasNode, Viewport } from "../types";
+import type { ChatMessage } from "./chat";
 import {
   deleteProjectDocument,
   loadProjectDocument,
@@ -22,15 +23,14 @@ function errorMessage(error: unknown): string {
 }
 
 interface Options {
-  getSnapshot: () => { nodes: CanvasNode[]; viewport: Viewport };
+  getSnapshot: () => { nodes: CanvasNode[]; viewport: Viewport; messages: ChatMessage[] };
   applyDocument: (document: CanvasDocument) => void;
-  isRequestInFlight: (nodeId: string) => boolean;
   onError: (message: string) => void;
 }
 
 // Owns the project list and which project's canvas is loaded, and keeps
 // the open canvas autosaved. The canvas itself (nodes, viewport, history)
-// stays in CanvasChat; this hook reads it through `getSnapshot` and swaps
+// stays in the Whiteboard; this hook reads it through `getSnapshot` and swaps
 // it through `applyDocument`.
 export function useProjects(options: Options) {
   const optionsRef = useRef(options);
@@ -80,12 +80,12 @@ export function useProjects(options: Options) {
     }
     const projectId = currentProjectIdRef.current;
     if (!projectId) return;
-    const { nodes, viewport } = optionsRef.current.getSnapshot();
+    const { nodes, viewport, messages } = optionsRef.current.getSnapshot();
     const hadContentChange = hasPendingContentChangeRef.current;
     hasPendingContentChangeRef.current = false;
     lastSavedNodesRef.current = nodes;
     try {
-      await saveProjectDocument(projectId, createCanvasDocument(nodes, viewport));
+      await saveProjectDocument(projectId, createCanvasDocument(nodes, viewport, messages));
       if (hadContentChange) touchProject(projectId);
     } catch (error) {
       reportError("Couldn't save the canvas", error);
@@ -109,11 +109,15 @@ export function useProjects(options: Options) {
     [scheduleSave],
   );
 
+  // For content that lives outside the node list, such as the chat.
+  const notifyContentChanged = useCallback(() => {
+    hasPendingContentChangeRef.current = true;
+    scheduleSave();
+  }, [scheduleSave]);
+
   const loadAndApply = useCallback(async (projectId: string) => {
     const rawDocument = await loadProjectDocument(projectId);
-    const document = rawDocument
-      ? parseCanvasDocument(rawDocument, { isRequestInFlight: optionsRef.current.isRequestInFlight })
-      : createCanvasDocument([], null);
+    const document = rawDocument ? parseCanvasDocument(rawDocument) : createCanvasDocument([], null);
     lastSavedNodesRef.current = document.nodes;
     hasPendingContentChangeRef.current = false;
     optionsRef.current.applyDocument(document);
@@ -152,7 +156,6 @@ export function useProjects(options: Options) {
         createdAt: now,
         updatedAt: now,
         workingFolder,
-        fileAccess: "ask",
       };
       try {
         await saveProjectDocument(project.id, createCanvasDocument([], null));
@@ -173,14 +176,8 @@ export function useProjects(options: Options) {
     [touchProject],
   );
 
-  // A different folder is a different grant — ask again before using it.
   const setWorkingFolder = useCallback(
-    (projectId: string, workingFolder: string | null) => touchProject(projectId, { workingFolder, fileAccess: "ask" }),
-    [touchProject],
-  );
-
-  const setFileAccess = useCallback(
-    (projectId: string, fileAccess: FileAccess) => touchProject(projectId, { fileAccess }),
+    (projectId: string, workingFolder: string | null) => touchProject(projectId, { workingFolder }),
     [touchProject],
   );
 
@@ -207,26 +204,6 @@ export function useProjects(options: Options) {
       else await createProject(DEFAULT_PROJECT_TITLE, null);
     },
     [createProject, openProject, persistIndex, reportError],
-  );
-
-  // Writes an AI reply into a project that isn't the one currently open
-  // (the user switched away while it was generating).
-  const updateStoredNode = useCallback(
-    async (projectId: string, nodeId: string, patchData: (node: CanvasNode) => CanvasNode["data"]) => {
-      try {
-        const rawDocument = await loadProjectDocument(projectId);
-        if (!rawDocument) return;
-        const document = parseCanvasDocument(rawDocument, { isRequestInFlight: () => true });
-        const nodes = document.nodes.map((node) =>
-          node.id === nodeId ? ({ ...node, data: patchData(node) } as CanvasNode) : node,
-        );
-        await saveProjectDocument(projectId, createCanvasDocument(nodes, document.viewport));
-        touchProject(projectId);
-      } catch (error) {
-        reportError("Couldn't save a reply to its project", error);
-      }
-    },
-    [reportError, touchProject],
   );
 
   // React's dev-mode double-invoked effects would otherwise create two
@@ -292,11 +269,10 @@ export function useProjects(options: Options) {
     createProject,
     renameProject,
     setWorkingFolder,
-    setFileAccess,
     deleteProject,
     notifyNodesChanged,
+    notifyContentChanged,
     scheduleSave,
     saveCurrentNow,
-    updateStoredNode,
   };
 }

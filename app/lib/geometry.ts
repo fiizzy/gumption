@@ -33,10 +33,10 @@ export const ANCHOR_FOCUS = {
 export type AnchorSide = keyof typeof ANCHOR_FOCUS;
 
 const BINDABLE_TYPES: ReadonlySet<CanvasNode["type"]> = new Set([
-  "conversation",
   "shapeElement",
   "textElement",
   "imageElement",
+  "pictogramElement",
 ]);
 
 export function isBindableNode(node: CanvasNode): boolean {
@@ -47,13 +47,8 @@ export function getNodeBox(node: CanvasNode): Box {
   const { x, y } = node.position;
   switch (node.type) {
     case "lineElement": {
-      const [start, end] = node.data.points;
-      return {
-        x: x + Math.min(start.x, end.x),
-        y: y + Math.min(start.y, end.y),
-        width: Math.abs(end.x - start.x),
-        height: Math.abs(end.y - start.y),
-      };
+      const bounds = getPointsBounds(node.data.points);
+      return { x: x + bounds.x, y: y + bounds.y, width: bounds.width, height: bounds.height };
     }
     case "textElement":
       return {
@@ -62,8 +57,6 @@ export function getNodeBox(node: CanvasNode): Box {
         width: node.data.width,
         height: node.measured?.height ?? node.data.fontSize * LINE_HEIGHT + TEXT_PADDING_Y * 2,
       };
-    case "conversation":
-      return { x, y, width: node.data.width, height: node.measured?.height ?? node.data.height };
     default:
       return { x, y, width: node.data.width, height: node.data.height };
   }
@@ -196,23 +189,30 @@ export function findTopmostShapeAt(point: Point, nodes: CanvasNode[]): CanvasNod
   return null;
 }
 
-export function getLineEndpoints(node: LineElementNode): [Point, Point] {
-  const [start, end] = node.data.points;
-  return [
-    { x: node.position.x + start.x, y: node.position.y + start.y },
-    { x: node.position.x + end.x, y: node.position.y + end.y },
-  ];
+function getPointsBounds(points: Point[]): Box {
+  const xs = points.map((point) => point.x);
+  const ys = points.map((point) => point.y);
+  const x = Math.min(...xs);
+  const y = Math.min(...ys);
+  return { x, y, width: Math.max(...xs) - x, height: Math.max(...ys) - y };
 }
 
-export function getLineGeometry(start: Point, end: Point): Pick<LineElementNode, "position"> & Pick<LineElementData, "points"> {
-  const minX = Math.min(start.x, end.x);
-  const minY = Math.min(start.y, end.y);
+// Every point of the line in canvas coordinates.
+export function getLinePoints(node: LineElementNode): Point[] {
+  return node.data.points.map((point) => ({ x: node.position.x + point.x, y: node.position.y + point.y }));
+}
+
+export function getLineEndpoints(node: LineElementNode): [Point, Point] {
+  const points = getLinePoints(node);
+  return [points[0], points[points.length - 1]];
+}
+
+// Stores canvas-space points relative to their own top-left corner.
+export function getLineGeometry(points: Point[]): Pick<LineElementNode, "position"> & Pick<LineElementData, "points"> {
+  const bounds = getPointsBounds(points);
   return {
-    position: { x: minX, y: minY },
-    points: [
-      { x: start.x - minX, y: start.y - minY },
-      { x: end.x - minX, y: end.y - minY },
-    ],
+    position: { x: bounds.x, y: bounds.y },
+    points: points.map((point) => ({ x: point.x - bounds.x, y: point.y - bounds.y })),
   };
 }
 
@@ -240,12 +240,15 @@ export function resolveLineBindings(nodes: CanvasNode[]): CanvasNode[] {
   let hasChanged = false;
   const resolved = nodes.map((node) => {
     if (node.type !== "lineElement" || (!node.data.startBinding && !node.data.endBinding)) return node;
-    const [currentStart, currentEnd] = getLineEndpoints(node);
+    const currentPoints = getLinePoints(node);
+    const currentStart = currentPoints[0];
+    const currentEnd = currentPoints[currentPoints.length - 1];
     const start = resolveEnd(node.data.startBinding, currentStart);
     const end = resolveEnd(node.data.endBinding, currentEnd);
     if (isSamePoint(start, currentStart) && isSamePoint(end, currentEnd)) return node;
     hasChanged = true;
-    const { position, points } = getLineGeometry(start, end);
+    // Bends stay where they are; only the bound ends follow their targets.
+    const { position, points } = getLineGeometry([start, ...currentPoints.slice(1, -1), end]);
     return { ...node, position, data: { ...node.data, points } };
   });
   return hasChanged ? resolved : nodes;

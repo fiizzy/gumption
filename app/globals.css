@@ -43,25 +43,10 @@
   --color-canvas-dot: #1d1d24;
   --color-connector:  #c4c4d8;
 
-  /* ── Branch banner ────────────────────── */
-  --color-branch-surface: #1e1b4b;
-  --color-branch-fg: #a5b4fc;
-  --color-branch-border: #312e81;
-
-  /* ── Terminal chat style (identical in both themes) ── */
-  --color-terminal-surface: #0a0f0b;
-  --color-terminal-chrome: #121a14;
-  --color-terminal-border: #1d3324;
-  --color-terminal-text: #4ade80;
-  --color-terminal-dim: #2e8b57;
-  --color-terminal-bright: #bbf7d0;
-
-
   /* ── Animations ───────────────────────── */
-  --animate-thinking: cc-thinking 1.2s ease-in-out infinite;
   --animate-node-in: cc-fadein 0.22s cubic-bezier(0.4, 0, 0.2, 1) both;
   --animate-mode-toast: cc-toast 1.3s cubic-bezier(0.4, 0, 0.2, 1) both;
-  --animate-cursor-blink: cc-cursor-blink 1s steps(1) infinite;
+  --animate-marker-out: cc-marker-out 1.4s ease-out 0.7s both;
 
   /* ── Sizes ────────────────────────────── */
   --width-node: 300px; /* → w-node */
@@ -96,11 +81,6 @@
 
   --color-canvas-dot: #d0d0d6;
   --color-connector: #96969f;
-
-  --color-branch-surface: #eef2ff;
-  --color-branch-fg: #4338ca;
-  --color-branch-border: #c7d2fe;
-
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -145,7 +125,7 @@
   pointer-events: none !important;
 }
 
-/* ── Thin scrollbar for node bodies ── */
+/* ── Thin scrollbar for scrolling panels ── */
 .cc-scroll {
   scrollbar-width: thin;
   scrollbar-color: var(--color-border) transparent;
@@ -164,127 +144,7 @@
   background: var(--color-foreground-muted);
 }
 
-/* ── Code syntax highlighting (rehype-highlight's .hljs-* token classes)
-   mapped onto existing design-system tokens instead of a canned highlight.js
-   theme, so it stays in sync with [data-theme] automatically. ── */
-.hljs-comment,
-.hljs-quote {
-  color: var(--color-foreground-subtle);
-  font-style: italic;
-}
-.hljs-keyword,
-.hljs-selector-tag,
-.hljs-doctag,
-.hljs-type,
-.hljs-literal {
-  color: var(--color-accent);
-}
-.hljs-string,
-.hljs-attr,
-.hljs-addition,
-.hljs-regexp {
-  color: var(--color-branch-fg);
-}
-.hljs-title,
-.hljs-name,
-.hljs-section,
-.hljs-selector-id,
-.hljs-selector-class {
-  color: var(--color-foreground);
-  font-weight: 600;
-}
-.hljs-number,
-.hljs-symbol,
-.hljs-bullet {
-  color: var(--color-accent);
-}
-.hljs-deletion {
-  color: var(--color-foreground-muted);
-  text-decoration: line-through;
-}
-.hljs-emphasis {
-  font-style: italic;
-}
-.hljs-strong {
-  font-weight: 700;
-}
-
-/* ── Terminal themes — each thread picks one; they re-point the terminal
-   tokens above, so everything drawn with them (text, borders, chrome,
-   spinner, code blocks) follows. Green is the @theme default. ── */
-.cc-terminal-theme-red {
-  --color-terminal-surface: #120a0a;
-  --color-terminal-chrome: #1c1010;
-  --color-terminal-border: #3d1e1e;
-  --color-terminal-text: #f87171;
-  --color-terminal-dim: #b55252;
-  --color-terminal-bright: #fecaca;
-}
-.cc-terminal-theme-blue {
-  --color-terminal-surface: #090d14;
-  --color-terminal-chrome: #0f1622;
-  --color-terminal-border: #1c2c42;
-  --color-terminal-text: #60a5fa;
-  --color-terminal-dim: #4170a8;
-  --color-terminal-bright: #bfdbfe;
-}
-.cc-terminal-theme-mono {
-  --color-terminal-surface: #0b0b0b;
-  --color-terminal-chrome: #161616;
-  --color-terminal-border: #2f2f2f;
-  --color-terminal-text: #e4e4e4;
-  --color-terminal-dim: #8c8c8c;
-  --color-terminal-bright: #ffffff;
-}
-
-/* ── Terminal chat style: markdown inside replies ── */
-.cc-terminal-markdown pre,
-.cc-terminal-markdown code,
-.cc-terminal-markdown th {
-  background: var(--color-terminal-chrome) !important;
-  border-color: var(--color-terminal-border) !important;
-  color: var(--color-terminal-bright);
-}
-.cc-terminal-markdown td,
-.cc-terminal-markdown blockquote {
-  border-color: var(--color-terminal-border) !important;
-}
-.cc-terminal-markdown a {
-  color: var(--color-terminal-bright);
-}
-.cc-terminal-markdown .hljs-keyword,
-.cc-terminal-markdown .hljs-number,
-.cc-terminal-markdown .hljs-literal,
-.cc-terminal-markdown .hljs-type {
-  color: var(--color-terminal-bright);
-}
-.cc-terminal-markdown .hljs-string,
-.cc-terminal-markdown .hljs-attr {
-  color: var(--color-terminal-text);
-}
-.cc-terminal-markdown .hljs-comment {
-  color: var(--color-terminal-dim);
-}
-
 /* ── Keyframes ── */
-@keyframes cc-thinking {
-  0%,
-  100% {
-    opacity: 1;
-    transform: scale(1);
-  }
-  50% {
-    opacity: 0.3;
-    transform: scale(0.85);
-  }
-}
-
-@keyframes cc-cursor-blink {
-  50% {
-    opacity: 0;
-  }
-}
-
 @keyframes cc-fadein {
   from {
     opacity: 0;
@@ -312,5 +172,42 @@
   100% {
     opacity: 0;
     transform: translate(-50%, -4px) scale(0.98);
+  }
+}
+
+@keyframes cc-marker-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+/* Under Reduce Motion the fades and the toast still appear and
+   disappear; only their movement goes. */
+@media (prefers-reduced-motion: reduce) {
+  @keyframes cc-fadein {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+  @keyframes cc-toast {
+    0% {
+      opacity: 0;
+      transform: translate(-50%, 0);
+    }
+    14%,
+    80% {
+      opacity: 1;
+      transform: translate(-50%, 0);
+    }
+    100% {
+      opacity: 0;
+      transform: translate(-50%, 0);
+    }
   }
 }

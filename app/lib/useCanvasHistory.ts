@@ -26,8 +26,9 @@ export function hasSameContent(first: CanvasNode[], second: CanvasNode[]): boole
 interface Options {
   nodes: CanvasNode[];
   setNodes: Dispatch<SetStateAction<CanvasNode[]>>;
-  // While text is being edited every keystroke changes `data`; the whole
-  // edit session should land as one undo step once editing ends.
+  // While text is being edited every keystroke changes `data`, and while a
+  // diagram streams in every operation does; each should land as one undo
+  // step once it ends.
   isEditing: boolean;
 }
 
@@ -65,19 +66,9 @@ export function useCanvasHistory({ nodes, setNodes, isEditing }: Options) {
     };
   }, []);
 
-  // Set for automatic follow-up changes (e.g. the chat grid re-arranging
-  // after an edit): they fold into the current snapshot instead of becoming
-  // an undo step of their own, so Ctrl+Z goes straight back to the user's edit.
-  const shouldAmendNextCommitRef = useRef(false);
-
   const commit = useCallback(() => {
     const current = latestNodesRef.current;
     if (hasSameContent(committedRef.current, current)) return;
-    if (shouldAmendNextCommitRef.current) {
-      shouldAmendNextCommitRef.current = false;
-      committedRef.current = current;
-      return;
-    }
     pastRef.current.push(committedRef.current);
     if (pastRef.current.length > HISTORY_LIMIT) pastRef.current.shift();
     futureRef.current = [];
@@ -127,50 +118,10 @@ export function useCanvasHistory({ nodes, setNodes, isEditing }: Options) {
     [syncHistorySizes],
   );
 
-  // For changes that arrive from outside the user's own editing (an AI
-  // reply landing on a chat node): applied to the live nodes *and* every
-  // snapshot, so the reply is never "undone" back into a loading state and
-  // never shows up as an undo step of its own. Patched data objects are
-  // shared across snapshots that shared the original, keeping
-  // hasSameContent's reference checks true.
-  const patchNodeEverywhere = useCallback(
-    (nodeId: string, patchData: (node: CanvasNode) => CanvasNode["data"]) => {
-      const patchedDataByOriginal = new Map<CanvasNode["data"], CanvasNode["data"]>();
-      const patchList = (list: CanvasNode[]): CanvasNode[] => {
-        let hasChanged = false;
-        const next = list.map((node) => {
-          if (node.id !== nodeId) return node;
-          hasChanged = true;
-          let patchedData = patchedDataByOriginal.get(node.data);
-          if (!patchedData) {
-            patchedData = patchData(node);
-            patchedDataByOriginal.set(node.data, patchedData);
-          }
-          return { ...node, data: patchedData } as CanvasNode;
-        });
-        return hasChanged ? next : list;
-      };
-      pastRef.current = pastRef.current.map(patchList);
-      futureRef.current = futureRef.current.map(patchList);
-      committedRef.current = patchList(committedRef.current);
-      setNodes((previous) => patchList(previous));
-    },
-    [setNodes],
-  );
-
-  // Commits whatever is pending now, then marks the next change as an
-  // automatic amendment of it (see shouldAmendNextCommitRef).
-  const amendNextChange = useCallback(() => {
-    commit();
-    shouldAmendNextCommitRef.current = true;
-  }, [commit]);
-
   return {
     undo,
-    amendNextChange,
     redo,
     reset,
-    patchNodeEverywhere,
     canUndo: historySizes.past > 0,
     canRedo: historySizes.future > 0,
   };

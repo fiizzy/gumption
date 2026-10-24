@@ -20,6 +20,9 @@ const SELECTION_OUTLINE_OFFSET = 4;
 const BINDING_HIGHLIGHT_WIDTH = 6;
 const BINDING_HIGHLIGHT_OPACITY = 0.45;
 const LABEL_PADDING = 8;
+const NOTE_GAP = 2;
+const NOTE_FONT_SIZE_RATIO = 0.78;
+const NOTE_OPACITY = 0.8;
 
 function ShapeElement({ data, selected }: NodeProps<HydratedShapeElementNode>) {
   const {
@@ -28,6 +31,7 @@ function ShapeElement({ data, selected }: NodeProps<HydratedShapeElementNode>) {
     height,
     seed,
     label,
+    note,
     strokeColor,
     backgroundColor,
     fillStyle,
@@ -93,19 +97,36 @@ function ShapeElement({ data, selected }: NodeProps<HydratedShapeElementNode>) {
         />
       )}
 
-      {(label || isEditing) && (
+      {(label || note || isEditing) && (
         <div
-          className="absolute inset-0 flex items-center justify-center pointer-events-none"
-          style={{ padding: LABEL_PADDING, opacity: opacity / 100 }}
+          className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none"
+          style={{ padding: LABEL_PADDING, gap: NOTE_GAP, opacity: opacity / 100 }}
         >
-          <EditableText
-            text={label}
-            isEditing={isEditing}
-            onChange={onLabelChange}
-            onStopEditing={onStopEditing}
-            className={cn("text-center max-w-full min-w-[1ch]", !isEditing && "cursor-move", getFontFamilyClass(fontFamily))}
-            style={{ color: strokeColor, fontSize, lineHeight: LINE_HEIGHT, pointerEvents: "auto" }}
-          />
+          {(label || isEditing) && (
+            <EditableText
+              text={label}
+              isEditing={isEditing}
+              onChange={onLabelChange}
+              onStopEditing={onStopEditing}
+              className={cn("text-center max-w-full min-w-[1ch]", !isEditing && "cursor-move", getFontFamilyClass(fontFamily))}
+              style={{ color: strokeColor, fontSize, lineHeight: LINE_HEIGHT, pointerEvents: "auto" }}
+            />
+          )}
+          {note && !isEditing && (
+            <div
+              className={cn("text-center max-w-full cursor-move", getFontFamilyClass(fontFamily))}
+              style={{
+                color: strokeColor,
+                fontSize: fontSize * NOTE_FONT_SIZE_RATIO,
+                lineHeight: LINE_HEIGHT,
+                opacity: NOTE_OPACITY,
+                overflowWrap: "anywhere",
+                pointerEvents: "auto",
+              }}
+            >
+              {note}
+            </div>
+          )}
         </div>
       )}
 

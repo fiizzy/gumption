@@ -78,6 +78,8 @@ export const TEXT_STYLE_KEYS = [
 
 export const IMAGE_STYLE_KEYS = ["opacity"] as const;
 
+export const PICTOGRAM_STYLE_KEYS = ["strokeColor", "strokeWidth", "sloppiness", "opacity", "fontSize", "fontFamily"] as const;
+
 export function createSeed(): number {
   return Math.floor(Math.random() * 2 ** 31);
 }

@@ -31,9 +31,10 @@ function LineElement({ data, selected }: Props) {
     onEndpointDrag,
     onEndpointDragEnd,
   } = data;
-  const [start, end] = points;
-  const width = Math.max(Math.abs(end.x - start.x), 1);
-  const height = Math.max(Math.abs(end.y - start.y), 1);
+  const width = Math.max(...points.map((point) => point.x), 1);
+  const height = Math.max(...points.map((point) => point.y), 1);
+  const polylinePoints = points.map((point) => `${point.x},${point.y}`).join(" ");
+  const endpoints = [points[0], points[points.length - 1]] as const;
 
   const roughPaths = useMemo(
     () => getLinePaths({ kind, points, seed, strokeWidth, strokeStyle, sloppiness }),
@@ -63,28 +64,26 @@ function LineElement({ data, selected }: Props) {
     <div className="relative text-foreground" style={{ width, height }}>
       <svg className="absolute inset-0 overflow-visible" width={width} height={height}>
         {selected && (
-          <line
-            x1={start.x}
-            y1={start.y}
-            x2={end.x}
-            y2={end.y}
+          <polyline
+            points={polylinePoints}
+            fill="none"
             stroke="var(--color-accent)"
             strokeWidth={strokeWidth + SELECTION_HIGHLIGHT_PADDING}
             strokeLinecap="round"
+            strokeLinejoin="round"
             opacity={SELECTION_HIGHLIGHT_OPACITY}
             pointerEvents="none"
           />
         )}
         {/* Wide invisible stroke — the actual click/drag hit target for a
-            thin line; the node's own box is click-through (see CanvasChat). */}
-        <line
-          x1={start.x}
-          y1={start.y}
-          x2={end.x}
-          y2={end.y}
+            thin line; the node's own box is click-through (see Whiteboard). */}
+        <polyline
+          points={polylinePoints}
+          fill="none"
           stroke="transparent"
           strokeWidth={Math.max(HIT_STROKE_MIN_WIDTH, strokeWidth + HIT_STROKE_PADDING)}
           strokeLinecap="round"
+          strokeLinejoin="round"
           pointerEvents="stroke"
           className="cursor-move"
         />
@@ -105,8 +104,8 @@ function LineElement({ data, selected }: Props) {
             style={{
               width: ENDPOINT_SIZE,
               height: ENDPOINT_SIZE,
-              left: points[index].x - ENDPOINT_SIZE / 2,
-              top: points[index].y - ENDPOINT_SIZE / 2,
+              left: endpoints[index].x - ENDPOINT_SIZE / 2,
+              top: endpoints[index].y - ENDPOINT_SIZE / 2,
               pointerEvents: "all",
             }}
           />

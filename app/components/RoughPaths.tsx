@@ -3,10 +3,14 @@
 import type { StrokeStyle } from "../types";
 import type { RoughPath } from "../lib/roughShapes";
 import { getStrokeDashArray } from "../lib/elementStyle";
-import { isHexColor } from "../lib/color";
+import { scaleHexAlpha } from "../lib/color";
 
-const HEX_WITHOUT_ALPHA_LENGTH = 7;
-const FILL_SKETCH_WEIGHT_RATIO = 0.5;
+const FILL_SKETCH_WEIGHT_RATIO = 0.3;
+const FILL_SKETCH_MIN_WEIGHT = 0.5;
+// Hatch lines are drawn in the fill's own translucent tint, a little
+// stronger than the fill so they still read as lines without turning into
+// stripes.
+const FILL_SKETCH_ALPHA_FACTOR = 1.6;
 
 interface Props {
   paths: RoughPath[];
@@ -20,12 +24,7 @@ interface Props {
 // values like `currentColor` resolve consistently, including in exports.
 export default function RoughPaths({ paths, strokeColor, backgroundColor, strokeWidth, strokeStyle }: Props) {
   const strokeDashArray = getStrokeDashArray(strokeStyle, strokeWidth);
-  // The background palette is translucent so solid fills stay subtle; hachure
-  // lines are thin, so they use the same hue at full strength to stay visible.
-  const sketchColor =
-    backgroundColor && isHexColor(backgroundColor)
-      ? backgroundColor.slice(0, HEX_WITHOUT_ALPHA_LENGTH)
-      : backgroundColor;
+  const sketchColor = backgroundColor ? scaleHexAlpha(backgroundColor, FILL_SKETCH_ALPHA_FACTOR) : undefined;
 
   return (
     <>
@@ -39,7 +38,8 @@ export default function RoughPaths({ paths, strokeColor, backgroundColor, stroke
               key={index}
               d={path.d}
               fill="none"
-              strokeWidth={strokeWidth * FILL_SKETCH_WEIGHT_RATIO}
+              strokeWidth={Math.max(FILL_SKETCH_MIN_WEIGHT, strokeWidth * FILL_SKETCH_WEIGHT_RATIO)}
+              strokeLinecap="round"
               style={{ stroke: sketchColor }}
             />
           );

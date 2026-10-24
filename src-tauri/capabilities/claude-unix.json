@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "claude-unix",
-  "description": "Runs the Claude Code CLI through sh so its stdin is /dev/null: claude -p waits for stdin to close, and the shell plugin keeps it open forever.",
+  "description": "Runs the Claude Code CLI as the whiteboard agent through sh so its stdin is /dev/null: claude -p waits for stdin to close, and the shell plugin keeps it open forever. Without a codebase every tool is off; with one, Claude may only read and search.",
   "windows": [
     "main"
   ],
@@ -10,11 +10,22 @@
     "linux"
   ],
   "permissions": [
+    "shell:allow-kill",
+    "shell:allow-open",
     {
       "identifier": "shell:allow-spawn",
       "allow": [
         {
-          "name": "claude-code",
+          "name": "claude-version",
+          "cmd": "sh",
+          "args": [
+            "-c",
+            "command -v claude && claude --version"
+          ],
+          "sidecar": false
+        },
+        {
+          "name": "whiteboard",
           "cmd": "sh",
           "args": [
             "-c",
@@ -38,7 +49,7 @@
           "sidecar": false
         },
         {
-          "name": "claude-code-readonly",
+          "name": "whiteboard-codebase",
           "cmd": "sh",
           "args": [
             "-c",
@@ -54,7 +65,7 @@
             "--include-partial-messages",
             "--no-session-persistence",
             "--disallowedTools",
-            "Bash,Edit,Write,NotebookEdit",
+            "Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch",
             "--append-system-prompt",
             {
               "validator": "[\\s\\S]*"
@@ -63,7 +74,7 @@
           "sidecar": false
         },
         {
-          "name": "claude-code-agent",
+          "name": "whiteboard-model",
           "cmd": "sh",
           "args": [
             "-c",
@@ -78,10 +89,40 @@
             "--verbose",
             "--include-partial-messages",
             "--no-session-persistence",
-            "--permission-mode",
-            "acceptEdits",
+            "--tools=",
+            "--model",
+            {
+              "validator": "^[A-Za-z0-9._:\\[\\]-]+$"
+            },
+            "--append-system-prompt",
+            {
+              "validator": "[\\s\\S]*"
+            }
+          ],
+          "sidecar": false
+        },
+        {
+          "name": "whiteboard-codebase-model",
+          "cmd": "sh",
+          "args": [
+            "-c",
+            "exec claude \"$@\" </dev/null",
+            "claude",
+            "-p",
+            {
+              "validator": "[\\s\\S]*"
+            },
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--include-partial-messages",
+            "--no-session-persistence",
             "--disallowedTools",
-            "Bash",
+            "Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch",
+            "--model",
+            {
+              "validator": "^[A-Za-z0-9._:\\[\\]-]+$"
+            },
             "--append-system-prompt",
             {
               "validator": "[\\s\\S]*"

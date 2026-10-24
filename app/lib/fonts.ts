@@ -1,13 +1,16 @@
-import { Inter, JetBrains_Mono, Lora, Nothing_You_Could_Do, Patrick_Hand } from "next/font/google";
+import localFont from "next/font/local";
 import type { FontFamily } from "../types";
 
-// Fonts for freeform canvas text (text elements and shape labels) only —
-// chat cards, the terminal and the rest of the UI don't use these.
-const sketchyHandwriting = Nothing_You_Could_Do({ subsets: ["latin"], weight: "400" });
-const clearHandwriting = Patrick_Hand({ subsets: ["latin"], weight: "400" });
-const sans = Inter({ subsets: ["latin"] });
-const serif = Lora({ subsets: ["latin"] });
-const mono = JetBrains_Mono({ subsets: ["latin"] });
+// Fonts for canvas text (text elements and shape labels) only; the app's
+// own chrome uses the system UI font. The files are vendored in app/fonts
+// (see the README there) so the faces load with no network at build or
+// run time: next/font/google silently swaps in a system font whenever its
+// download fails, which left the dev build without any handwriting.
+const clearHandwriting = localFont({ src: "../fonts/patrick-hand-latin.woff2", weight: "400", display: "swap" });
+const sketchyHandwriting = localFont({ src: "../fonts/nothing-you-could-do-latin.woff2", weight: "400", display: "swap" });
+const sans = localFont({ src: "../fonts/inter-variable-latin.woff2", weight: "100 900", display: "swap" });
+const serif = localFont({ src: "../fonts/lora-variable-latin.woff2", weight: "400 700", display: "swap" });
+const mono = localFont({ src: "../fonts/jetbrains-mono-variable-latin.woff2", weight: "100 800", display: "swap" });
 
 const FONT_FAMILY_CLASS: Record<FontFamily, string> = {
   casual: clearHandwriting.className,

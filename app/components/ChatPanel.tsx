@@ -2,13 +2,14 @@
 
 import { useEffect, useRef, type RefObject } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
-import { faArrowUp, faCheck, faChevronLeft, faChevronRight, faComment, faFolder, faStop } from "@fortawesome/free-solid-svg-icons";
+import { faArrowUp, faCheck, faChevronLeft, faChevronRight, faComment, faFolder, faPen, faStop, faXmark } from "@fortawesome/free-solid-svg-icons";
 import type { ChatMessage } from "../lib/chat";
 import type { DiagramSessionStatus } from "../lib/useDiagramSession";
 import type { DiagramCounts } from "../lib/diagram/builder";
 import type { ProjectSummary } from "../lib/projectStore";
 import { describeMissing, describeOutdated, type AgentFailure, type ClaudeCodeStatus } from "../lib/claudeCode";
 import { MODEL_OPTIONS, type ModelChoice } from "../lib/modelPreference";
+import { KIND_OPTIONS, type DiagramKindChoice } from "../lib/kindPreference";
 import { cn } from "../lib/cn";
 import ActivitySpinner from "./ActivitySpinner";
 import Dropdown from "./Dropdown";
@@ -45,6 +46,14 @@ interface Props {
   onRecheckClaudeCode: () => void;
   model: ModelChoice;
   onModelChange: (model: ModelChoice) => void;
+  kind: DiagramKindChoice;
+  onKindChange: (kind: DiagramKindChoice) => void;
+  // The drawing the next message changes (its artboard is selected), or
+  // null when the next message draws something new.
+  editTargetName: string | null;
+  onClearEditTarget: () => void;
+  onShowArtboard: (artboardId: string) => void;
+  onEditArtboard: (artboardId: string) => void;
   inputRef: RefObject<HTMLTextAreaElement | null>;
 }
 
@@ -90,6 +99,12 @@ export default function ChatPanel({
   onRecheckClaudeCode,
   model,
   onModelChange,
+  kind,
+  onKindChange,
+  editTargetName,
+  onClearEditTarget,
+  onShowArtboard,
+  onEditArtboard,
   inputRef,
 }: Props) {
   const logRef = useRef<HTMLDivElement>(null);
@@ -185,6 +200,8 @@ export default function ChatPanel({
                   <MessageView
                     key={message.id}
                     message={message}
+                    onShowArtboard={onShowArtboard}
+                    onEditArtboard={onEditArtboard}
                     resultActions={
                       index === messages.length - 1 && message.role === "assistant" && (status.phase === "done" || status.phase === "stopped") ? (
                         <div className="flex items-center gap-1 -ml-2">
@@ -213,6 +230,24 @@ export default function ChatPanel({
               </div>
             )}
             <div className="flex flex-col rounded-xl border border-border bg-surface-overlay transition-colors duration-150 focus-within:border-accent">
+              {editTargetName && (
+                <div role="status" className="flex items-center gap-2 pl-3 pr-1.5 pt-1.5 text-[12px] leading-5 text-foreground-muted">
+                  <FontAwesomeIcon icon={faPen} className="w-2.5 h-2.5 shrink-0 text-accent" aria-hidden />
+                  <span className="min-w-0 truncate">
+                    Changing <span className="text-foreground">{editTargetName}</span>
+                  </span>
+                  <span className="flex-1" />
+                  <button
+                    type="button"
+                    onClick={onClearEditTarget}
+                    aria-label="Draw something new instead"
+                    title="Draw something new instead"
+                    className="shrink-0 w-6 h-6 flex items-center justify-center rounded-md bg-transparent border-none cursor-pointer text-foreground-muted hover:text-foreground hover:bg-surface-subtle transition-colors"
+                  >
+                    <FontAwesomeIcon icon={faXmark} className="w-3 h-3" aria-hidden />
+                  </button>
+                </div>
+              )}
               <textarea
                 ref={inputRef}
                 rows={1}
@@ -226,7 +261,13 @@ export default function ChatPanel({
                   if (event.key === "Escape") event.currentTarget.blur();
                 }}
                 aria-label="Message"
-                placeholder={codebaseFolder ? "Ask about this codebase, or describe a diagram…" : "Describe a diagram to draw…"}
+                placeholder={
+                  editTargetName
+                    ? `Describe a change to ${editTargetName}…`
+                    : codebaseFolder
+                      ? "Ask about this codebase, or describe a diagram…"
+                      : "Describe a diagram to draw…"
+                }
                 className="cc-scroll w-full resize-none bg-transparent border-none outline-none px-3 pt-2.5 pb-1 text-[13px] leading-5 text-foreground placeholder:text-foreground-muted"
               />
               <div className="flex items-center gap-1.5 pl-2 pr-1.5 pb-1.5">
@@ -240,6 +281,15 @@ export default function ChatPanel({
                   </span>
                 )}
                 <span className="flex-1" />
+                <Dropdown
+                  label="Diagram"
+                  value={kind}
+                  options={[...KIND_OPTIONS]}
+                  onChange={onKindChange}
+                  opensUpward
+                  align="start"
+                  buttonClassName="h-7 px-2 rounded-md bg-transparent border-transparent text-[11.5px] font-semibold text-foreground-muted hover:text-foreground hover:bg-surface-subtle"
+                />
                 <Dropdown
                   label="Model"
                   value={model}
@@ -282,7 +332,17 @@ export default function ChatPanel({
   );
 }
 
-function MessageView({ message, resultActions }: { message: ChatMessage; resultActions: React.ReactNode }) {
+function MessageView({
+  message,
+  resultActions,
+  onShowArtboard,
+  onEditArtboard,
+}: {
+  message: ChatMessage;
+  resultActions: React.ReactNode;
+  onShowArtboard: (artboardId: string) => void;
+  onEditArtboard: (artboardId: string) => void;
+}) {
   if (message.role === "user") {
     return (
       <div className="flex justify-end">
@@ -295,7 +355,7 @@ function MessageView({ message, resultActions }: { message: ChatMessage; resultA
   return (
     <div className="flex flex-col gap-1.5">
       {message.text && <AssistantText text={message.text} />}
-      {message.diagram && <DiagramCard diagram={message.diagram} />}
+      {message.diagram && <DiagramCard diagram={message.diagram} onShowArtboard={onShowArtboard} onEditArtboard={onEditArtboard} />}
       {resultActions}
     </div>
   );
@@ -305,18 +365,35 @@ function AssistantText({ text }: { text: string }) {
   return <p className="text-[13px] leading-5 text-foreground whitespace-pre-wrap break-words">{text}</p>;
 }
 
-function DiagramCard({ diagram }: { diagram: NonNullable<ChatMessage["diagram"]> }) {
+function DiagramCard({
+  diagram,
+  onShowArtboard,
+  onEditArtboard,
+}: {
+  diagram: NonNullable<ChatMessage["diagram"]>;
+  onShowArtboard: (artboardId: string) => void;
+  onEditArtboard: (artboardId: string) => void;
+}) {
   const extras = [formatCounts(diagram.counts), diagram.skippedCount > 0 && `${diagram.skippedCount} step${diagram.skippedCount === 1 ? "" : "s"} skipped`]
     .filter(Boolean)
     .join(" · ");
+  const artboardId = diagram.isUndone ? null : diagram.artboardId;
   return (
-    <div className={cn("flex items-start gap-2 text-[12px] leading-5 text-foreground-muted", diagram.isUndone && "line-through opacity-70")}>
+    <div className="flex flex-col gap-0.5">
+      <div className={cn("flex items-start gap-2 text-[12px] leading-5 text-foreground-muted", diagram.isUndone && "line-through opacity-70")}>
       <FontAwesomeIcon icon={faCheck} className="w-3 h-3 mt-1 shrink-0" aria-hidden />
       <span className="min-w-0 break-words">
         <span className="text-foreground">{diagram.wasStopped ? "Stopped." : diagram.summary}</span>
         {diagram.wasStopped && " Kept what was drawn so far"} · {extras}
         {diagram.isUndone && " · undone"}
       </span>
+      </div>
+      {artboardId && (
+        <div className="flex items-center gap-1 pl-3">
+          <TextButton onClick={() => onShowArtboard(artboardId)}>Show</TextButton>
+          <TextButton onClick={() => onEditArtboard(artboardId)}>Change</TextButton>
+        </div>
+      )}
     </div>
   );
 }

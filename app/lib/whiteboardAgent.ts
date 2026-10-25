@@ -1,4 +1,5 @@
 import { Command, type Child } from "@tauri-apps/plugin-shell";
+import type { DiagramKind } from "./diagram/kinds";
 import { buildWhiteboardSystemPrompt } from "./diagram/prompt";
 
 // Each mode's argument list must match its scoped command in
@@ -50,6 +51,8 @@ export interface WhiteboardAgentOptions {
   codebaseFolder: string | null;
   // A Claude Code model alias or id, or null for Claude Code's own default.
   model: string | null;
+  // A diagram kind the person pinned, or null to let Claude choose.
+  kind: DiagramKind | null;
   onTextDelta: (delta: string) => void;
   onToolActivity: (activity: ToolActivity) => void;
 }
@@ -66,7 +69,7 @@ export interface WhiteboardAgentRun {
 
 // Runs Claude Code as the whiteboard agent and streams its reply text as it
 // arrives. The caller turns the text into drawing operations line by line.
-export function runWhiteboardAgent({ prompt, codebaseFolder, model, onTextDelta, onToolActivity }: WhiteboardAgentOptions): WhiteboardAgentRun {
+export function runWhiteboardAgent({ prompt, codebaseFolder, model, kind, onTextDelta, onToolActivity }: WhiteboardAgentOptions): WhiteboardAgentRun {
   const mode = codebaseFolder ? CODEBASE_MODE : NO_CODEBASE_MODE;
   // Each scoped command has a twin that also takes --model, since the
   // capability allow-list is positional and cannot express an optional flag.
@@ -80,7 +83,7 @@ export function runWhiteboardAgent({ prompt, codebaseFolder, model, onTextDelta,
       ...mode.arguments,
       ...(model ? ["--model", model] : []),
       "--append-system-prompt",
-      buildWhiteboardSystemPrompt(codebaseFolder !== null),
+      buildWhiteboardSystemPrompt(codebaseFolder !== null, kind),
     ],
     codebaseFolder ? { cwd: codebaseFolder } : undefined,
   );

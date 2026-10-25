@@ -16,8 +16,8 @@ const CORNER_RADIUS_RATIO = 0.25;
 const MAX_CORNER_RADIUS = 32;
 // Hatching stays fine at every stroke width: the gap grows only a little
 // with the stroke, and the hatch lines are a fraction of it.
-const HACHURE_GAP_BASE = 4;
-const HACHURE_GAP_PER_STROKE_WIDTH = 1;
+const HACHURE_GAP_BASE = 2.5;
+const HACHURE_GAP_PER_STROKE_WIDTH = 0.5;
 const FILL_WEIGHT_PER_STROKE_WIDTH = 0.3;
 const ARROWHEAD_BASE_LENGTH = 16;
 const ARROWHEAD_LENGTH_PER_STROKE_WIDTH = 2;
@@ -127,23 +127,25 @@ export function getShapePaths(input: ShapePathInput): RoughPath[] {
 interface LinePathInput extends StrokeOptions {
   kind: LineKind;
   points: Point[];
+  curved?: boolean;
 }
 
-// A line through its points, drawn as one stroke, with an arrowhead on the
-// last segment when it is an arrow.
+// A line through its points, drawn as one stroke (straight runs, or one
+// smooth curve through them), with an arrowhead on the last segment when
+// it is an arrow.
 export function getLinePaths(input: LinePathInput): RoughPath[] {
-  const { points } = input;
+  const { points, curved = false } = input;
   if (points.length < 2) return [];
   const start = points[points.length - 2];
   const end = points[points.length - 1];
   const options = buildOptions(input);
+  const pointPairs = points.map((point): [number, number] => [point.x, point.y]);
   const paths = toRoughPaths(
     points.length === 2
       ? generator.line(points[0].x, points[0].y, end.x, end.y, options)
-      : generator.linearPath(
-          points.map((point) => [point.x, point.y]),
-          options,
-        ),
+      : curved
+        ? generator.curve(pointPairs, options)
+        : generator.linearPath(pointPairs, options),
   );
   if (input.kind !== "arrow") return paths;
 

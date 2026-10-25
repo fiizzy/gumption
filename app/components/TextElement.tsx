@@ -28,6 +28,7 @@ function TextElement({ data, selected }: NodeProps<HydratedTextElementNode>) {
     fontFamily,
     fontWeight,
     opacity,
+    knockout,
     isEditing,
     isBindingTarget,
     onTextChange,
@@ -39,6 +40,7 @@ function TextElement({ data, selected }: NodeProps<HydratedTextElementNode>) {
     <div
       className={cn(
         "relative group text-foreground cursor-move rounded-sm",
+        knockout && "bg-surface",
         isBindingTarget && "outline-2 outline-solid outline-accent/60",
       )}
       style={{ width }}

@@ -3,9 +3,10 @@
 import { useCallback, useRef, useState } from "react";
 import type { ElementStyle, Point } from "../types";
 import type { ChatTurn } from "./chat";
-import { DiagramBuilder, type DiagramChange, type DiagramCounts } from "./diagram/builder";
+import { DiagramBuilder, type DiagramChange, type DiagramCounts, type DiagramState } from "./diagram/builder";
+import type { DiagramKind } from "./diagram/kinds";
 import { OperationLineBuffer, parseOperationLine } from "./diagram/operations";
-import { buildConversationPrompt } from "./diagram/prompt";
+import { buildConversationPrompt, buildEditPrompt } from "./diagram/prompt";
 import type { Box } from "./geometry";
 import { runWhiteboardAgent, type ToolActivity, type WhiteboardAgentRun } from "./whiteboardAgent";
 import { describeAgentFailure, type AgentFailure, type ClaudeCodeStatus } from "./claudeCode";
@@ -14,8 +15,8 @@ import { describeAgentFailure, type AgentFailure, type ClaudeCodeStatus } from "
 export type DiagramSessionStatus =
   | { phase: "idle" }
   | { phase: "working"; prompt: string; text: string; activity: string; counts: DiagramCounts }
-  | { phase: "done"; prompt: string; text: string; summary: string; outline: string; counts: DiagramCounts; skippedCount: number }
-  | { phase: "stopped"; prompt: string; text: string; outline: string; counts: DiagramCounts }
+  | { phase: "done"; prompt: string; text: string; summary: string; outline: string; counts: DiagramCounts; skippedCount: number; artboardId: string }
+  | { phase: "stopped"; prompt: string; text: string; outline: string; counts: DiagramCounts; artboardId: string }
   | { phase: "failed"; prompt: string; text: string; failure: AgentFailure };
 
 export interface StartDiagramOptions {
@@ -26,6 +27,16 @@ export interface StartDiagramOptions {
   style: ElementStyle;
   codebaseFolder: string | null;
   model: string | null;
+  kind: DiagramKind | null;
+  // Changing a drawing already on the canvas, in place, rather than
+  // drawing a new one.
+  edit: DiagramEdit | null;
+}
+
+export interface DiagramEdit {
+  state: DiagramState;
+  memberIds: string[];
+  framePosition: Point;
 }
 
 interface Options {
@@ -84,9 +95,9 @@ export function useDiagramSession({ applyChange, onBoundsChange, getClaudeCodeSt
   const optionsRef = useRef({ applyChange, onBoundsChange, getClaudeCodeStatus });
   optionsRef.current = { applyChange, onBoundsChange, getClaudeCodeStatus };
 
-  const start = useCallback(({ prompt, transcript, origin, style, codebaseFolder, model }: StartDiagramOptions) => {
+  const start = useCallback(({ prompt, transcript, origin, style, codebaseFolder, model, kind, edit }: StartDiagramOptions) => {
     if (runRef.current) return;
-    const builder = new DiagramBuilder(origin, style);
+    const builder = edit ? DiagramBuilder.restore(edit.state, edit.memberIds, edit.framePosition, style) : new DiagramBuilder(origin, style);
     const buffer = new OperationLineBuffer();
     const spokenLines: string[] = [];
     let skippedCount = 0;
@@ -133,9 +144,10 @@ export function useDiagramSession({ applyChange, onBoundsChange, getClaudeCodeSt
     };
 
     const run = runWhiteboardAgent({
-      prompt: buildConversationPrompt(transcript, prompt),
+      prompt: edit ? buildEditPrompt(transcript, prompt, builder.describe()) : buildConversationPrompt(transcript, prompt),
       codebaseFolder,
       model,
+      kind,
       onTextDelta: (delta) => buffer.push(delta).forEach(handleLine),
       onToolActivity: (toolActivity) => {
         activity = describeToolActivity(toolActivity);
@@ -149,7 +161,7 @@ export function useDiagramSession({ applyChange, onBoundsChange, getClaudeCodeSt
         buffer.flush().forEach(handleLine);
         const counts = builder.getCounts();
         if (wasCancelled) {
-          setStatus({ phase: "stopped", prompt, text: text(), outline: builder.describe(), counts });
+          setStatus({ phase: "stopped", prompt, text: text(), outline: builder.describe(), counts, artboardId: builder.getArtboardId() });
           return;
         }
         if (counts.shapes === 0) {
@@ -171,6 +183,7 @@ export function useDiagramSession({ applyChange, onBoundsChange, getClaudeCodeSt
           outline: builder.describe(),
           counts,
           skippedCount,
+          artboardId: builder.getArtboardId(),
         });
       })
       .catch((error: unknown) => {

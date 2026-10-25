@@ -21,6 +21,9 @@ interface Props<Value extends string> {
   onChange: (value: Value) => void;
   // Opens upwards — for controls docked at the bottom of the screen.
   opensUpward?: boolean;
+  // Which edge of the button the menu lines up with. A control near the
+  // left edge of the screen opens from its start so the menu stays on it.
+  align?: "start" | "end";
   buttonClassName?: string;
   menuClassName?: string;
   style?: CSSProperties;
@@ -32,6 +35,7 @@ export default function Dropdown<Value extends string>({
   options,
   onChange,
   opensUpward = false,
+  align = "end",
   buttonClassName,
   menuClassName,
   style,
@@ -78,7 +82,8 @@ export default function Dropdown<Value extends string>({
           role="listbox"
           aria-label={label}
           className={cn(
-            "absolute right-0 z-50 min-w-full py-1 rounded-lg border animate-node-in",
+            "absolute z-50 min-w-full py-1 rounded-lg border animate-node-in",
+            align === "start" ? "left-0" : "right-0",
             opensUpward ? "bottom-full mb-1.5" : "top-full mt-1.5",
             menuClassName ?? "bg-surface-overlay border-border",
           )}

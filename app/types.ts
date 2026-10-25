@@ -73,10 +73,24 @@ export interface TextElementData extends TextStyle {
   [key: string]: unknown;
   text: string;
   width: number;
+  // Drawn on a patch of canvas colour, so a line passing under the text is
+  // hidden there; the agent uses it for labels sitting on a connector.
+  knockout?: boolean;
+}
+
+// A diagram's frame is an artboard: it names the drawing, knows every
+// node in it (they move and go with it) and carries the diagram's model so
+// a later request can change the drawing in place. The model is opaque
+// here; lib/diagram/builder.ts reads and writes it.
+export interface ArtboardData {
+  name: string;
+  memberIds: string[];
+  diagram: unknown;
 }
 
 export interface ShapeElementData extends ShapeStyle {
   [key: string]: unknown;
+  artboard?: ArtboardData;
   shapeKind: ShapeKind;
   width: number;
   height: number;
@@ -97,6 +111,9 @@ export interface LineElementData extends LineStyle {
   [key: string]: unknown;
   kind: LineKind;
   points: Point[];
+  // Drawn as one smooth curve through the points instead of straight
+  // runs between them; the agent's mind-map branches use this.
+  curved?: boolean;
   seed: number;
   startBinding: Binding | null;
   endBinding: Binding | null;

@@ -6,12 +6,13 @@ import type { HydratedPictogramElementNode } from "../types";
 import { LINE_HEIGHT } from "../lib/elementStyle";
 import { getFontFamilyClass } from "../lib/fonts";
 import { getPictogramPaths } from "../lib/roughShapes";
+import { PICTOGRAM_LABEL_GAP as LABEL_GAP } from "../lib/pictograms";
 import { cn } from "../lib/cn";
 import AnchorHandles from "./AnchorHandles";
 import RoughPaths from "./RoughPaths";
 
 const SELECTION_OUTLINE_OFFSET = 4;
-const LABEL_GAP = 6;
+
 // Watching the picture appear stroke by stroke is the point of a
 // pictogram: each path is revealed in turn, like a pen drawing it.
 const STROKE_DRAW_MS = 320;

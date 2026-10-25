@@ -68,7 +68,9 @@ import { useCanvasHistory } from "../lib/useCanvasHistory";
 import { useDiagramSession, type DiagramSessionStatus } from "../lib/useDiagramSession";
 import { canCheckClaudeCode, checkClaudeCode, type ClaudeCodeStatus } from "../lib/claudeCode";
 import { modelArgumentFor, readStoredModelChoice, writeStoredModelChoice, type ModelChoice } from "../lib/modelPreference";
-import type { DiagramChange } from "../lib/diagram/builder";
+import { chosenKindFor, readStoredKindChoice, writeStoredKindChoice, type DiagramKindChoice } from "../lib/kindPreference";
+import { carryArtboardMembers, findArtboard, findEditTarget, withArtboardMembers, withoutArtboard, type EditTarget } from "../lib/artboards";
+import { FRAME_PADDING, type DiagramChange } from "../lib/diagram/builder";
 import { toChatTurns, type ChatMessage } from "../lib/chat";
 import { isPictogramName, type PictogramName } from "../lib/pictograms";
 import { DEFAULT_PROJECT_TITLE, useProjects } from "../lib/useProjects";
@@ -134,7 +136,9 @@ const NO_EDGES: Edge[] = [];
 // a little up and left of the viewport centre so it grows into view.
 const DIAGRAM_SPACING = 160;
 const DIAGRAM_ORIGIN_OFFSET = { x: 320, y: 220 } as const;
-const WORKING_MARKER_LIFT = 60;
+// The working sign sits above the artboard's top-left corner, clear of
+// the artboard's name tag.
+const WORKING_MARKER_LIFT = 72;
 // The area the view jumps to the moment a request is sent: room for the
 // sign, the title, the lane labels and the first row, before any of it
 // has arrived.
@@ -511,6 +515,14 @@ function WhiteboardInner() {
     setModelChoice(choice);
     writeStoredModelChoice(choice);
   }, []);
+  const [kindChoice, setKindChoice] = useState<DiagramKindChoice>("auto");
+  useEffect(() => {
+    setKindChoice(readStoredKindChoice());
+  }, []);
+  const changeKind = useCallback((choice: DiagramKindChoice) => {
+    setKindChoice(choice);
+    writeStoredKindChoice(choice);
+  }, []);
 
   const diagram = useDiagramSession({
     applyChange: applyDiagramChange,
@@ -702,7 +714,8 @@ function WhiteboardInner() {
   const deleteSelection = useCallback(() => {
     setEditingId(null);
     setNodes((previous) => {
-      const deletedIds = new Set(previous.filter((node) => node.selected).map((node) => node.id));
+      // An artboard goes with everything on it.
+      const deletedIds = withArtboardMembers(previous, new Set(previous.filter((node) => node.selected).map((node) => node.id)));
       if (deletedIds.size === 0) return previous;
       const detached = detachLineBindings(
         previous,
@@ -713,8 +726,10 @@ function WhiteboardInner() {
   }, []);
 
   const duplicateSelection = useCallback(() => {
-    const selectedNodes = displayedNodesRef.current.filter((node) => node.selected);
-    insertNodes(cloneNodes(selectedNodes, { x: DUPLICATE_OFFSET, y: DUPLICATE_OFFSET }));
+    const displayed = displayedNodesRef.current;
+    const copiedIds = withArtboardMembers(displayed, new Set(displayed.filter((node) => node.selected).map((node) => node.id)));
+    const copied = displayed.filter((node) => copiedIds.has(node.id));
+    insertNodes(cloneNodes(copied, { x: DUPLICATE_OFFSET, y: DUPLICATE_OFFSET }).map(withoutArtboard));
   }, [insertNodes]);
 
   const selectAll = useCallback(() => {
@@ -732,7 +747,7 @@ function WhiteboardInner() {
 
   const nudgeSelection = useCallback(
     (deltaX: number, deltaY: number) => {
-      const selectedIds = new Set(nodesRef.current.filter((node) => node.selected).map((node) => node.id));
+      const selectedIds = withArtboardMembers(nodesRef.current, new Set(nodesRef.current.filter((node) => node.selected).map((node) => node.id)));
       if (selectedIds.size === 0) return;
       detachLinesMovedApart(selectedIds);
       setNodes((previous) =>
@@ -904,13 +919,24 @@ function WhiteboardInner() {
     return { x: center.x - DIAGRAM_ORIGIN_OFFSET.x, y: center.y - DIAGRAM_ORIGIN_OFFSET.y };
   }, [getViewportCenterFlowPosition]);
 
+  // The drawing the next request changes: the artboard that is selected or
+  // holds the selection. With none, the request draws something new.
+  const editTarget = useMemo(() => findEditTarget(nodes), [nodes]);
+  const editTargetRef = useRef<EditTarget | null>(null);
+  editTargetRef.current = editTarget;
+  const lastEditTargetRef = useRef<EditTarget | null>(null);
+  const editingRunRef = useRef(false);
+
   // `replacesLastMessage` is for a retry: the failed request is swapped
-  // for the new one instead of repeated.
+  // for the new one instead of repeated, against the same drawing.
   const requestDiagram = useCallback(
     (prompt: string, { replacesLastMessage = false } = {}) => {
       const trimmed = prompt.trim();
       if (!trimmed || isDrawing) return;
+      const target = replacesLastMessage ? lastEditTargetRef.current : editTargetRef.current;
       lastPromptRef.current = trimmed;
+      lastEditTargetRef.current = target;
+      editingRunRef.current = target !== null;
       setCommandDraft("");
       setEditingId(null);
       setMode("select");
@@ -918,11 +944,15 @@ function WhiteboardInner() {
       const history = replacesLastMessage ? messagesRef.current.slice(0, -1) : messagesRef.current;
       const transcript = toChatTurns(history);
       setMessages([...history, { id: crypto.randomUUID(), role: "user", text: trimmed, createdAt: Date.now(), diagram: null }]);
-      const origin = getDiagramOrigin();
-      setDiagramOrigin(origin);
-      // Go to where the drawing will appear right away, so the working
-      // sign is in view before the first shape lands.
-      followDiagram({ x: origin.x, y: origin.y - WORKING_MARKER_LIFT, ...INITIAL_FOLLOW_SIZE }, { isRequested: true });
+      // A change happens where the drawing already is; a new drawing goes
+      // beside everything else. Either way the view goes there at once, so
+      // the person watches the part that is changing.
+      const origin = target ? target.framePosition : getDiagramOrigin();
+      // The sign is anchored to the artboard's corner: a new drawing's frame
+      // sits a padding outside its origin.
+      const corner = target ? origin : { x: origin.x - FRAME_PADDING, y: origin.y - FRAME_PADDING };
+      setDiagramOrigin(corner);
+      followDiagram(target ? target.bounds : { x: corner.x, y: corner.y - WORKING_MARKER_LIFT, ...INITIAL_FOLLOW_SIZE }, { isRequested: true });
       diagram.start({
         prompt: trimmed,
         transcript,
@@ -930,10 +960,44 @@ function WhiteboardInner() {
         style: currentStyle,
         codebaseFolder: projects.currentProject?.workingFolder ?? null,
         model: modelArgumentFor(modelChoice),
+        kind: chosenKindFor(kindChoice),
+        edit: target ? { state: target.state, memberIds: target.memberIds, framePosition: target.framePosition } : null,
       });
     },
-    [currentStyle, diagram, followDiagram, getDiagramOrigin, isDrawing, modelChoice, projects.currentProject?.workingFolder, setMode],
+    [currentStyle, diagram, followDiagram, getDiagramOrigin, isDrawing, kindChoice, modelChoice, projects.currentProject?.workingFolder, setMode],
   );
+
+  // Shows a drawing from the chat: the view goes to its artboard.
+  const showArtboard = useCallback(
+    (artboardId: string) => {
+      const artboard = findArtboard(nodesRef.current, artboardId);
+      if (artboard) followDiagram(getNodeBox(artboard), { isRequested: true });
+    },
+    [followDiagram],
+  );
+
+  // Picks a drawing to change: selects its artboard, shows it, and puts the
+  // cursor in the composer.
+  const editArtboard = useCallback(
+    (artboardId: string) => {
+      if (!findArtboard(nodesRef.current, artboardId)) return;
+      setEditingId(null);
+      setMode("select");
+      setNodes((previous) =>
+        previous.map((node) => {
+          const shouldSelect = node.id === artboardId;
+          return node.selected === shouldSelect ? node : ({ ...node, selected: shouldSelect } as CanvasNode);
+        }),
+      );
+      showArtboard(artboardId);
+      commandInputRef.current?.focus();
+    },
+    [setMode, showArtboard],
+  );
+
+  const clearEditTarget = useCallback(() => {
+    setNodes((previous) => deselectAll(previous));
+  }, []);
 
   // The reply joins the conversation once the run has settled; while the
   // agent works, the chat shows it live from the session status.
@@ -954,6 +1018,8 @@ function WhiteboardInner() {
         skippedCount: status.phase === "done" ? status.skippedCount : 0,
         wasStopped: status.phase === "stopped",
         isUndone: false,
+        artboardId: status.artboardId,
+        wasEdit: editingRunRef.current,
       },
     };
     setMessages((previous) => [...previous, reply]);
@@ -981,18 +1047,19 @@ function WhiteboardInner() {
     const sanitizedChanges = changes.map((change) =>
       change.type === "dimensions" && change.setAttributes ? { ...change, setAttributes: false } : change,
     );
-    setNodes((previous) => applyNodeChanges(sanitizedChanges, previous));
+    // Dragging an artboard brings everything on it along.
+    setNodes((previous) => applyNodeChanges(carryArtboardMembers(previous, sanitizedChanges), previous));
   }, []);
 
   const onNodeDragStart = useCallback(
     (_event: unknown, _node: Node, draggedNodes: Node[]) => {
-      detachLinesMovedApart(new Set(draggedNodes.map((node) => node.id)));
+      detachLinesMovedApart(withArtboardMembers(nodesRef.current, new Set(draggedNodes.map((node) => node.id))));
     },
     [detachLinesMovedApart],
   );
   const onSelectionDragStart = useCallback(
     (_event: unknown, draggedNodes: Node[]) => {
-      detachLinesMovedApart(new Set(draggedNodes.map((node) => node.id)));
+      detachLinesMovedApart(withArtboardMembers(nodesRef.current, new Set(draggedNodes.map((node) => node.id))));
     },
     [detachLinesMovedApart],
   );
@@ -1091,9 +1158,15 @@ function WhiteboardInner() {
 
   const onNodeDoubleClick = useCallback(
     (_event: ReactMouseEvent, node: Node) => {
+      // An artboard has no label to type into: double-clicking it picks the
+      // drawing to change and puts the cursor in the composer.
+      if (findArtboard(nodesRef.current, node.id)) {
+        editArtboard(node.id);
+        return;
+      }
       if (node.type === "shapeElement" || node.type === "textElement") startEditing(node.id);
     },
-    [startEditing],
+    [editArtboard, startEditing],
   );
 
   // ── Drag-to-draw gesture — shape/line/arrow tools commit on drag ──
@@ -1729,6 +1802,12 @@ function WhiteboardInner() {
         onRecheckClaudeCode={() => void recheckClaudeCode()}
         model={modelChoice}
         onModelChange={changeModel}
+        kind={kindChoice}
+        onKindChange={changeKind}
+        editTargetName={editTarget?.name ?? null}
+        onClearEditTarget={clearEditTarget}
+        onShowArtboard={showArtboard}
+        onEditArtboard={editArtboard}
         inputRef={commandInputRef}
       />
 

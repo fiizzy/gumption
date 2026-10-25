@@ -12,6 +12,11 @@ export interface ChatDiagram {
   skippedCount: number;
   wasStopped: boolean;
   isUndone: boolean;
+  // The artboard the drawing is on, so the chat can show it or pick it to
+  // change; null for records from before artboards.
+  artboardId: string | null;
+  // Whether this reply changed an existing drawing rather than adding one.
+  wasEdit: boolean;
 }
 
 export interface ChatMessage {
@@ -54,6 +59,8 @@ export function normalizeChatMessages(value: unknown): ChatMessage[] {
           skippedCount: readCount(entry.diagram.skippedCount),
           wasStopped: entry.diagram.wasStopped === true,
           isUndone: entry.diagram.isUndone === true,
+          artboardId: typeof entry.diagram.artboardId === "string" ? entry.diagram.artboardId : null,
+          wasEdit: entry.diagram.wasEdit === true,
         }
       : null;
     messages.push({

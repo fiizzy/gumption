@@ -40,6 +40,8 @@ const BINDABLE_TYPES: ReadonlySet<CanvasNode["type"]> = new Set([
 ]);
 
 export function isBindableNode(node: CanvasNode): boolean {
+  // An artboard is a container, not something to point at.
+  if (node.type === "shapeElement" && node.data.artboard) return false;
   return BINDABLE_TYPES.has(node.type);
 }
 
@@ -289,4 +291,50 @@ export function snapAngle(start: Point, end: Point): Point {
   const length = distanceBetween(start, end);
   const angle = Math.round(Math.atan2(end.y - start.y, end.x - start.x) / ANGLE_SNAP_STEP) * ANGLE_SNAP_STEP;
   return { x: start.x + Math.cos(angle) * length, y: start.y + Math.sin(angle) * length };
+}
+
+// A curved connector is stored as just its two ends; its shape is worked
+// out here every time it is drawn, so when either end moves (the shapes it
+// joins are dragged) the curve re-bends to fit instead of keeping a stale
+// bend. Each end leaves straight out of the side of the shape it is bound
+// to (the binding's focus says which), the way FigJam's curved connectors
+// do; an unbound end leaves along the line's main axis.
+const CURVE_SAMPLES = 24;
+const CURVE_MIN_HANDLE = 24;
+const CURVE_MAX_HANDLE = 220;
+const CURVE_HANDLE_RATIO = 0.45;
+const SIDE_EPSILON = 0.02;
+
+function outwardFromFocus(focus: Point | null | undefined, fallback: Point): Point {
+  if (!focus) return fallback;
+  if (focus.x >= 1 - SIDE_EPSILON) return { x: 1, y: 0 };
+  if (focus.x <= SIDE_EPSILON) return { x: -1, y: 0 };
+  if (focus.y <= SIDE_EPSILON) return { x: 0, y: -1 };
+  if (focus.y >= 1 - SIDE_EPSILON) return { x: 0, y: 1 };
+  return fallback;
+}
+
+export function getCurvedLinePoints(points: Point[], startFocus?: Point | null, endFocus?: Point | null): Point[] {
+  // Older drawings stored the curve already sampled; draw those as they are.
+  if (points.length !== 2) return points;
+  const [start, end] = points;
+  const deltaX = end.x - start.x;
+  const deltaY = end.y - start.y;
+  const isMostlyLevel = Math.abs(deltaX) >= Math.abs(deltaY);
+  const mainAxis = isMostlyLevel ? { x: Math.sign(deltaX) || 1, y: 0 } : { x: 0, y: Math.sign(deltaY) || 1 };
+  const startOut = outwardFromFocus(startFocus, mainAxis);
+  const endOut = outwardFromFocus(endFocus, { x: -mainAxis.x, y: -mainAxis.y });
+  const handle = Math.min(CURVE_MAX_HANDLE, Math.max(CURVE_MIN_HANDLE, Math.hypot(deltaX, deltaY) * CURVE_HANDLE_RATIO));
+  const first = { x: start.x + startOut.x * handle, y: start.y + startOut.y * handle };
+  const second = { x: end.x + endOut.x * handle, y: end.y + endOut.y * handle };
+  const sampled: Point[] = [];
+  for (let step = 0; step <= CURVE_SAMPLES; step += 1) {
+    const t = step / CURVE_SAMPLES;
+    const inverse = 1 - t;
+    sampled.push({
+      x: inverse ** 3 * start.x + 3 * inverse ** 2 * t * first.x + 3 * inverse * t ** 2 * second.x + t ** 3 * end.x,
+      y: inverse ** 3 * start.y + 3 * inverse ** 2 * t * first.y + 3 * inverse * t ** 2 * second.y + t ** 3 * end.y,
+    });
+  }
+  return sampled;
 }

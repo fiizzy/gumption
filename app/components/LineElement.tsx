@@ -5,6 +5,7 @@ import type { PointerEvent as ReactPointerEvent } from "react";
 import { useReactFlow, type NodeProps } from "@xyflow/react";
 import type { HydratedLineElementNode } from "../types";
 import { getLinePaths } from "../lib/roughShapes";
+import { getCurvedLinePoints } from "../lib/geometry";
 import RoughPaths from "./RoughPaths";
 
 const ENDPOINT_SIZE = 12;
@@ -22,23 +23,32 @@ function LineElement({ data, selected }: Props) {
   const {
     kind,
     points,
+    curved,
     seed,
     strokeColor,
     strokeWidth,
     strokeStyle,
     sloppiness,
     opacity,
+    startBinding,
+    endBinding,
     onEndpointDrag,
     onEndpointDragEnd,
   } = data;
   const width = Math.max(...points.map((point) => point.x), 1);
   const height = Math.max(...points.map((point) => point.y), 1);
-  const polylinePoints = points.map((point) => `${point.x},${point.y}`).join(" ");
+  // A curved line is re-bent from its ends on every draw, so it follows the
+  // shapes it joins.
+  const drawnPoints = useMemo(
+    () => (curved ? getCurvedLinePoints(points, startBinding?.focus, endBinding?.focus) : points),
+    [curved, points, startBinding?.focus, endBinding?.focus],
+  );
+  const polylinePoints = drawnPoints.map((point) => `${point.x},${point.y}`).join(" ");
   const endpoints = [points[0], points[points.length - 1]] as const;
 
   const roughPaths = useMemo(
-    () => getLinePaths({ kind, points, seed, strokeWidth, strokeStyle, sloppiness }),
-    [kind, points, seed, strokeWidth, strokeStyle, sloppiness],
+    () => getLinePaths({ kind, points: drawnPoints, curved, seed, strokeWidth, strokeStyle, sloppiness }),
+    [kind, drawnPoints, curved, seed, strokeWidth, strokeStyle, sloppiness],
   );
 
   const beginEndpointDrag = (index: 0 | 1) => (event: ReactPointerEvent<HTMLDivElement>) => {

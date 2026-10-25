@@ -2,11 +2,16 @@ import type { Point } from "../../types";
 import type { Box } from "../geometry";
 import type { DiagramDirection } from "./operations";
 
-// Placement and routing for a lane diagram. The agent says which lane each
-// shape belongs to and what connects to what; everything else is decided
-// here so that connected shapes sit level, lines cross as little as
-// possible, and every line runs in straight horizontal and vertical runs
-// through channels kept clear of shapes and their side-notes.
+// Placement and routing for a layered diagram: shapes sit in lanes (named
+// by the agent, or ranks computed from the flow) and connect to each other;
+// everything else is decided here so that connected shapes sit level, lines
+// cross as little as possible, and every line runs in straight horizontal
+// and vertical runs through channels kept clear of shapes and side-notes.
+//
+// A flowchart adds three rules from the discipline: the main path (the
+// spine) is pinned to the first row so it runs straight; a decision's other
+// exits leave it sideways; and a loop back runs along the outer channel,
+// never through the drawing.
 //
 // The engine works in an abstract frame: `u` runs along the lanes (left to
 // right for direction "right", top to bottom for "down") and `v` across
@@ -19,12 +24,24 @@ export interface LayoutShapeInput {
   height: number;
   // Height of the side-notes stacked under the shape, 0 for none.
   annotationBand: number;
+  // How far a right-side note reaches past the shape's edge across the
+  // lanes, 0 for none; the gap to the next row grows to keep it clear.
+  annotationSpill?: number;
+  // A decision: its exits to other rows leave from its sides.
+  branchesSideways?: boolean;
+  // How far inside the box the drawn thing is (a pictogram's picture sits
+  // in the middle with its label under it). Lines meet the drawn edges;
+  // only the canvas-bottom side keeps the box edge, below the label.
+  portInsets?: { left: number; right: number; top: number; bottom: number };
 }
 
 export interface LayoutConnectorInput {
   id: string;
   from: string;
   to: string;
+  // The label's width, when it has one: a level run between two
+  // neighbouring shapes is kept long enough to carry it.
+  labelWidth?: number;
 }
 
 export interface LayoutInput {
@@ -37,10 +54,26 @@ export interface LayoutInput {
   defaultShapeSize: { width: number; height: number };
   shapes: LayoutShapeInput[];
   connectors: LayoutConnectorInput[];
+  // The spine: kept first in its lane and on the first row.
+  pinnedFirst?: ReadonlySet<string>;
+  // Lines running back to an earlier lane go around the outside.
+  loopsOutside?: boolean;
+  // Space between lanes; the default suits swimlanes with labelled handoffs.
+  laneGap?: number;
+  // Which way side-notes hang from a shape's bottom; ports on that side
+  // step aside from them. Defaults to right when lanes are columns.
+  annotationSide?: "left" | "right";
+  // Sets of shapes drawn inside one box: kept next to each other in a lane.
+  groups?: string[][];
+  // How much room a group's box takes around its members, so gaps next to
+  // a group grow to hold its padding (and its label, on the canvas-top
+  // side) plus a margin to whatever is next, and routing channels stay
+  // outside the box.
+  groupSpacing?: { padding: number; labelSpace: number; margin: number };
 }
 
 export interface LayoutLane {
-  // Where the lane starts along the lane axis, and how far it extends.
+  // Along the lane axis: x for direction "right", y for "down".
   start: number;
   extent: number;
 }
@@ -53,10 +86,10 @@ export interface LayoutResult {
   contentBounds: Box | null;
 }
 
-const LANE_GAP = 150;
+const DEFAULT_LANE_GAP = 150;
 const SLOT_GAP = 56;
-// Side-notes hang below a shape; the gap that holds them keeps this much
-// clear room past them for a routing channel.
+// Side-notes hang below a shape; the gap after it grows to hold them, and
+// the routing channel sits beyond that.
 const NOTE_GAP = 14;
 const LANE_CHANNEL_INSET = 45;
 const LANE_CHANNEL_ZONE = 66;
@@ -64,21 +97,24 @@ const ROW_CHANNEL_INSET = 20;
 const ROW_CHANNEL_ZONE = 40;
 const CHANNEL_TRACK_SPACING = 12;
 const PORT_SPACING = 24;
-// Lines leaving the bottom of an annotated shape step aside from its
-// side-note: left of centre when lanes are columns (the note sits right of
-// centre), well right of centre when lanes are rows (the note sits at the
-// left edge). Those sides also pack their ports a little tighter.
+// Ports on the side a note hangs from step aside from it: a little toward
+// the far side when the note sits right of centre, well past it when the
+// note sits at the left edge.
 const NOTE_PORT_SHIFT_RIGHT = -16;
-const NOTE_PORT_SHIFT_DOWN = 60;
+const NOTE_PORT_SHIFT_LEFT = 60;
 const NOTE_SIDE_PORT_SPACING = 20;
-// A same-lane line that has to skip past other shapes counts against an
-// ordering like a crossing would.
+// Ordering score weights: a same-lane line past another shape, and a
+// same-lane line running backwards.
 const SKIP_PENALTY = 1;
 const BACKWARD_PENALTY = 2;
+const GROUP_SPLIT_PENALTY = 2;
+// Space a level run keeps beyond its label's width: a margin each side.
+const LABEL_RUN_ROOM = 40;
 const EXHAUSTIVE_ORDERING_LIMIT = 5000;
 const ORDERING_SWEEPS = 4;
 const ROW_PASSES = 3;
 const COLLINEAR_EPSILON = 0.5;
+const OUTER_ROW_GAP = -1;
 
 interface AbstractBox {
   u: number;
@@ -105,8 +141,6 @@ interface PortRequest {
 
 interface ChannelUse {
   connectorId: string;
-  // Which corner of the path this channel serves: the first bend or the
-  // last, so a detour can use two lane channels.
   slot: "first" | "last" | "row";
   from: number;
   to: number;
@@ -115,7 +149,9 @@ interface ChannelUse {
 type Route =
   | { kind: "across"; fromSide: Side; toSide: Side; laneGap: number; laneGapOut: number; rowGap: number | null }
   | { kind: "along"; rowGap: number }
-  | { kind: "loop"; side: Side; laneGap: number };
+  | { kind: "loop"; side: Side; laneGap: number }
+  | { kind: "branch" }
+  | { kind: "outside"; side: "minusV" | "plusV"; exitsViaBack: boolean; entersViaForward: boolean };
 
 function median(values: number[]): number {
   const sorted = [...values].sort((first, second) => first - second);
@@ -125,6 +161,8 @@ function median(values: number[]): number {
 
 export function layoutDiagram(input: LayoutInput): LayoutResult {
   const isRight = input.direction === "right";
+  const annotationSide = input.annotationSide ?? (isRight ? "right" : "left");
+  const pinned = input.pinnedFirst ?? new Set<string>();
   const toReal = (u: number, v: number): Point => (isRight ? { x: u, y: v } : { x: v, y: u });
   const toRealBox = ({ u, v, du, dv }: AbstractBox): Box => (isRight ? { x: u, y: v, width: du, height: dv } : { x: v, y: u, width: dv, height: du });
   const originU = isRight ? input.contentOrigin.x : input.contentOrigin.y;
@@ -154,8 +192,16 @@ export function layoutDiagram(input: LayoutInput): LayoutResult {
   }
   const laneOf = (id: string) => shapes.get(id)!.laneIndex;
 
-  orderLanes(lanes, connectors, neighbors, laneOf);
-  const rowCount = assignRows(lanes, shapes, neighbors);
+  const groups = (input.groups ?? []).map((members) => members.filter((id) => shapes.has(id))).filter((members) => members.length > 1);
+  orderLanes(lanes, connectors, neighbors, laneOf, pinned, groups);
+  // Lanes a spine line passes over keep their first row clear for it.
+  const reservedFirstRow = new Set<number>();
+  for (const connector of connectors) {
+    if (!pinned.has(connector.from) || !pinned.has(connector.to)) continue;
+    const [low, high] = [laneOf(connector.from), laneOf(connector.to)].sort((first, second) => first - second);
+    for (let laneIndex = low + 1; laneIndex < high; laneIndex += 1) reservedFirstRow.add(laneIndex);
+  }
+  const rowCount = assignRows(lanes, shapes, neighbors, pinned, reservedFirstRow);
 
   // ── Extents and gaps ──────────────────────────────────────────
   const laneExtents = lanes.map((ids) => Math.max(defaultUSize, ...ids.map((id) => shapes.get(id)!.uSize)));
@@ -168,10 +214,74 @@ export function layoutDiagram(input: LayoutInput): LayoutResult {
   const rowBands = Array.from({ length: rowCount }, (_, row) =>
     Math.max(0, ...[...shapes.values()].filter((shape) => shape.row === row).map((shape) => shape.annotationBand)),
   );
+  // ── Room for group boxes ──────────────────────────────────────
+  // For gap g (after lane or row g): the far padding of groups ending at g
+  // and the near padding of groups starting at g + 1. The canvas-top side
+  // of a group also holds its label: rows are that axis when lanes are
+  // columns, lanes when lanes are rows.
+  const spacing = input.groupSpacing;
+  const groupRanges = spacing
+    ? groups.map((members) => {
+        const cells = members.map((id) => shapes.get(id)!);
+        return {
+          minLane: Math.min(...cells.map((shape) => shape.laneIndex)),
+          maxLane: Math.max(...cells.map((shape) => shape.laneIndex)),
+          minRow: Math.min(...cells.map((shape) => shape.row)),
+          maxRow: Math.max(...cells.map((shape) => shape.row)),
+        };
+      })
+    : [];
+  const nearPadding = (axis: "lane" | "row", gap: number) => {
+    if (!spacing) return 0;
+    const startsNext = groupRanges.some((range) => (axis === "lane" ? range.minLane : range.minRow) === gap + 1);
+    const labelOnAxis = axis === "row" ? isRight : !isRight;
+    return startsNext ? spacing.padding + (labelOnAxis ? spacing.labelSpace : 0) : 0;
+  };
+  const farPadding = (axis: "lane" | "row", gap: number) => {
+    if (!spacing) return 0;
+    return groupRanges.some((range) => (axis === "lane" ? range.maxLane : range.maxRow) === gap) ? spacing.padding : 0;
+  };
+  const groupRoom = (axis: "lane" | "row", gap: number) => {
+    const room = nearPadding(axis, gap) + farPadding(axis, gap);
+    return room === 0 ? 0 : room + spacing!.margin;
+  };
+
+  // A labelled level run straight between neighbours needs the label's
+  // width plus a margin each side: across neighbouring lanes when lanes are
+  // columns, between neighbouring rows of one lane when lanes are rows.
+  const labelRoom = (axis: "lane" | "row", gap: number) => {
+    let room = 0;
+    for (const connector of connectors) {
+      if (!connector.labelWidth) continue;
+      const from = shapes.get(connector.from)!;
+      const to = shapes.get(connector.to)!;
+      const isLevelNeighbour =
+        axis === "lane"
+          ? isRight && from.row === to.row && Math.min(from.laneIndex, to.laneIndex) === gap && Math.abs(from.laneIndex - to.laneIndex) === 1
+          : !isRight && from.laneIndex === to.laneIndex && Math.min(from.row, to.row) === gap && Math.abs(from.row - to.row) === 1;
+      if (isLevelNeighbour) room = Math.max(room, connector.labelWidth + LABEL_RUN_ROOM);
+    }
+    return room;
+  };
+
+  const laneSpacing = input.laneGap ?? DEFAULT_LANE_GAP;
   const gapAfterLane = (laneIndex: number) =>
-    isRight || laneBands[laneIndex] === 0 ? LANE_GAP : Math.max(LANE_GAP, NOTE_GAP + laneBands[laneIndex] + LANE_CHANNEL_ZONE);
-  const gapAfterRow = (row: number) =>
-    !isRight || rowBands[row] === 0 ? SLOT_GAP : Math.max(SLOT_GAP, NOTE_GAP + rowBands[row] + ROW_CHANNEL_ZONE);
+    Math.max((isRight || laneBands[laneIndex] === 0 ? laneSpacing : Math.max(laneSpacing, NOTE_GAP + laneBands[laneIndex] + LANE_CHANNEL_ZONE)), labelRoom("lane", laneIndex)) + groupRoom("lane", laneIndex);
+  // When lanes are rows, a right-side note reaches sideways into the next
+  // row's gap; that gap grows to keep the note short of the channel.
+  const rowSpills = Array.from({ length: rowCount }, (_, row) =>
+    Math.max(0, ...[...shapes.values()].filter((shape) => shape.row === row).map((shape) => shape.annotationSpill ?? 0)),
+  );
+  const gapAfterRow = (row: number) => {
+    const base = isRight
+      ? rowBands[row] === 0
+        ? SLOT_GAP
+        : Math.max(SLOT_GAP, NOTE_GAP + rowBands[row] + ROW_CHANNEL_ZONE)
+      : rowSpills[row] === 0
+        ? SLOT_GAP
+        : Math.max(SLOT_GAP, rowSpills[row] + NOTE_GAP + ROW_CHANNEL_INSET);
+    return Math.max(base, labelRoom("row", row)) + groupRoom("row", row);
+  };
 
   const laneStarts: number[] = [];
   let laneCursor = originU;
@@ -202,15 +312,16 @@ export function layoutDiagram(input: LayoutInput): LayoutResult {
   // A lane gap `g` lies after lane g (g = -1 is before the first lane); a
   // row gap likewise. Channels sit toward the far end of a gap, past where
   // side-notes reach.
+  // A channel next to a group runs outside the group's box.
   const laneChannelCenter = (gap: number) => {
-    if (gap + 1 < lanes.length) return laneStarts[gap + 1] - LANE_CHANNEL_INSET;
-    if (gap < 0) return Math.max(input.leadingLimit, laneStarts[0] - LANE_CHANNEL_INSET);
-    return laneEnd(gap) + LANE_CHANNEL_INSET;
+    if (gap + 1 < lanes.length) return laneStarts[gap + 1] - nearPadding("lane", gap) - LANE_CHANNEL_INSET;
+    if (gap < 0) return Math.max(input.leadingLimit, laneStarts[0] - nearPadding("lane", gap) - LANE_CHANNEL_INSET);
+    return laneEnd(gap) + farPadding("lane", gap) + LANE_CHANNEL_INSET;
   };
   const rowChannelCenter = (gap: number) => {
-    if (gap + 1 < rowCount) return rowStarts[gap + 1] - ROW_CHANNEL_INSET;
-    if (gap < 0) return rowStarts[0] - ROW_CHANNEL_INSET;
-    return rowEnd(gap) + ROW_CHANNEL_INSET;
+    if (gap + 1 < rowCount) return rowStarts[gap + 1] - nearPadding("row", gap) - ROW_CHANNEL_INSET;
+    if (gap < 0) return rowStarts[0] - nearPadding("row", gap) - ROW_CHANNEL_INSET;
+    return rowEnd(gap) + farPadding("row", gap) + ROW_CHANNEL_INSET;
   };
 
   const occupied = new Set([...shapes.values()].map((shape) => `${shape.laneIndex}:${shape.row}`));
@@ -224,6 +335,30 @@ export function layoutDiagram(input: LayoutInput): LayoutResult {
     for (let row = low + 1; row < high; row += 1) if (occupied.has(`${laneIndex}:${row}`)) return false;
     return true;
   };
+  const isFreeToOuterEdge = (laneIndex: number, row: number) => isFreeBetweenRows(laneIndex, OUTER_ROW_GAP, row);
+
+  // The cells each group covers, so a detour can avoid running through a
+  // group's box: the nearest gap to the target is taken unless it would
+  // cut a group, then the other gaps are tried, nearest first.
+  const groupSpans = groups.map((members) => {
+    const cells = members.map((id) => shapes.get(id)!);
+    return {
+      minLane: Math.min(...cells.map((shape) => shape.laneIndex)),
+      maxLane: Math.max(...cells.map((shape) => shape.laneIndex)),
+      minRow: Math.min(...cells.map((shape) => shape.row)),
+      maxRow: Math.max(...cells.map((shape) => shape.row)),
+    };
+  });
+  const crossesGroup = (fromLane: number, toLane: number, rowGap: number) => {
+    const [low, high] = fromLane < toLane ? [fromLane, toLane] : [toLane, fromLane];
+    return groupSpans.some((group) => group.maxLane >= low && group.minLane <= high && group.minRow <= rowGap && group.maxRow >= rowGap + 1);
+  };
+  const pickDetourRowGap = (from: ShapeState, to: ShapeState) => {
+    const nearest = from.row <= to.row ? to.row - 1 : to.row;
+    const candidates = [nearest, nearest === to.row ? to.row - 1 : to.row, OUTER_ROW_GAP, rowCount - 1];
+    return candidates.find((gap) => !crossesGroup(from.laneIndex, to.laneIndex, gap)) ?? nearest;
+  };
+  const isFreeToFarEdge = (laneIndex: number, row: number) => isFreeBetweenRows(laneIndex, row, rowCount);
 
   // ── Routes ────────────────────────────────────────────────────
   const routes = new Map<string, Route>();
@@ -240,10 +375,49 @@ export function layoutDiagram(input: LayoutInput): LayoutResult {
   };
   const centerU = (shape: ShapeState) => shape.box.u + shape.box.du / 2;
   const centerV = (shape: ShapeState) => shape.box.v + shape.box.dv / 2;
+  const span = (first: number, second: number) => ({ from: Math.min(first, second), to: Math.max(first, second) });
 
   for (const connector of connectors) {
     const from = shapes.get(connector.from)!;
     const to = shapes.get(connector.to)!;
+    if (input.loopsOutside && to.laneIndex < from.laneIndex) {
+      // Back around the outside. The outer side (beside the spine) is
+      // preferred; if a shape stands in the way there but the far side is
+      // clear, the loop goes around that side instead, so it never has to
+      // cut across the spine. Otherwise: up through the lane channel, along
+      // the outer row channel, and down the target's lane channel.
+      const outerIsFree = isFreeToOuterEdge(from.laneIndex, from.row) && isFreeToOuterEdge(to.laneIndex, to.row);
+      const farIsFree = isFreeToFarEdge(from.laneIndex, from.row) && isFreeToFarEdge(to.laneIndex, to.row);
+      const side = !outerIsFree && farIsFree ? "plusV" : "minusV";
+      const exitsViaBack = side === "minusV" && !isFreeToOuterEdge(from.laneIndex, from.row);
+      const entersViaForward = side === "minusV" && !isFreeToOuterEdge(to.laneIndex, to.row);
+      const rowGap = side === "minusV" ? OUTER_ROW_GAP : rowCount - 1;
+      routes.set(connector.id, { kind: "outside", side, exitsViaBack, entersViaForward });
+      requestPort(from.id, exitsViaBack ? "back" : side, { connectorId: connector.id, end: "start", sortKey: centerU(to) });
+      requestPort(to.id, entersViaForward ? "forward" : side, { connectorId: connector.id, end: "end", sortKey: centerU(from) });
+      const channelV = rowChannelCenter(rowGap);
+      const exitU = exitsViaBack ? laneChannelCenter(from.laneIndex - 1) : centerU(from);
+      const entryU = entersViaForward ? laneChannelCenter(to.laneIndex) : centerU(to);
+      if (exitsViaBack) useChannel(laneChannelUses, from.laneIndex - 1, { connectorId: connector.id, slot: "first", ...span(centerV(from), channelV) });
+      if (entersViaForward) useChannel(laneChannelUses, to.laneIndex, { connectorId: connector.id, slot: "last", ...span(centerV(to), channelV) });
+      useChannel(rowChannelUses, rowGap, { connectorId: connector.id, slot: "row", ...span(exitU, entryU) });
+      continue;
+    }
+    if (
+      from.branchesSideways &&
+      to.laneIndex > from.laneIndex &&
+      to.row !== from.row &&
+      isFreeBetweenRows(from.laneIndex, from.row, to.row) &&
+      !occupied.has(`${from.laneIndex}:${to.row}`) &&
+      isFreeBetweenLanes(from.laneIndex, to.laneIndex, to.row)
+    ) {
+      // A decision's side exit: sideways to the target's row, then forward
+      // into it. Crosses the channels on its way rather than running along them.
+      routes.set(connector.id, { kind: "branch" });
+      requestPort(from.id, to.row > from.row ? "plusV" : "minusV", { connectorId: connector.id, end: "start", sortKey: centerU(to) });
+      requestPort(to.id, "back", { connectorId: connector.id, end: "end", sortKey: centerV(from) });
+      continue;
+    }
     if (from.laneIndex !== to.laneIndex) {
       const travel = to.laneIndex > from.laneIndex ? 1 : -1;
       const fromSide: Side = travel === 1 ? "forward" : "back";
@@ -251,21 +425,21 @@ export function layoutDiagram(input: LayoutInput): LayoutResult {
       const laneGap = travel === 1 ? from.laneIndex : from.laneIndex - 1;
       const laneGapOut = travel === 1 ? to.laneIndex - 1 : to.laneIndex;
       const needsDetour = !isFreeBetweenLanes(from.laneIndex, to.laneIndex, to.row);
-      const rowGap = needsDetour ? (from.row <= to.row ? to.row - 1 : to.row) : null;
+      const rowGap = needsDetour ? pickDetourRowGap(from, to) : null;
       routes.set(connector.id, { kind: "across", fromSide, toSide, laneGap, laneGapOut, rowGap });
       requestPort(from.id, fromSide, { connectorId: connector.id, end: "start", sortKey: centerV(to) });
       requestPort(to.id, toSide, { connectorId: connector.id, end: "end", sortKey: centerV(from) });
       const fromV = centerV(from);
       const toV = centerV(to);
       if (rowGap === null) {
-        useChannel(laneChannelUses, laneGap, { connectorId: connector.id, slot: "first", from: Math.min(fromV, toV), to: Math.max(fromV, toV) });
+        useChannel(laneChannelUses, laneGap, { connectorId: connector.id, slot: "first", ...span(fromV, toV) });
       } else {
         const channelV = rowChannelCenter(rowGap);
-        useChannel(laneChannelUses, laneGap, { connectorId: connector.id, slot: "first", from: Math.min(fromV, channelV), to: Math.max(fromV, channelV) });
-        useChannel(laneChannelUses, laneGapOut, { connectorId: connector.id, slot: "last", from: Math.min(toV, channelV), to: Math.max(toV, channelV) });
+        useChannel(laneChannelUses, laneGap, { connectorId: connector.id, slot: "first", ...span(fromV, channelV) });
+        useChannel(laneChannelUses, laneGapOut, { connectorId: connector.id, slot: "last", ...span(toV, channelV) });
         const firstU = laneChannelCenter(laneGap);
         const lastU = laneChannelCenter(laneGapOut);
-        useChannel(rowChannelUses, rowGap, { connectorId: connector.id, slot: "row", from: Math.min(firstU, lastU), to: Math.max(firstU, lastU) });
+        useChannel(rowChannelUses, rowGap, { connectorId: connector.id, slot: "row", ...span(firstU, lastU) });
       }
       continue;
     }
@@ -274,7 +448,7 @@ export function layoutDiagram(input: LayoutInput): LayoutResult {
       routes.set(connector.id, { kind: "along", rowGap });
       requestPort(from.id, "plusV", { connectorId: connector.id, end: "start", sortKey: centerU(to) });
       requestPort(to.id, "minusV", { connectorId: connector.id, end: "end", sortKey: centerU(from) });
-      useChannel(rowChannelUses, rowGap, { connectorId: connector.id, slot: "row", from: Math.min(centerU(from), centerU(to)), to: Math.max(centerU(from), centerU(to)) });
+      useChannel(rowChannelUses, rowGap, { connectorId: connector.id, slot: "row", ...span(centerU(from), centerU(to)) });
       continue;
     }
     // Backwards within a lane, or past other shapes: loop out through the
@@ -284,29 +458,41 @@ export function layoutDiagram(input: LayoutInput): LayoutResult {
     routes.set(connector.id, { kind: "loop", side, laneGap });
     requestPort(from.id, side, { connectorId: connector.id, end: "start", sortKey: centerV(to) });
     requestPort(to.id, side, { connectorId: connector.id, end: "end", sortKey: centerV(from) });
-    useChannel(laneChannelUses, laneGap, { connectorId: connector.id, slot: "first", from: Math.min(centerV(from), centerV(to)), to: Math.max(centerV(from), centerV(to)) });
+    useChannel(laneChannelUses, laneGap, { connectorId: connector.id, slot: "first", ...span(centerV(from), centerV(to)) });
   }
 
   // ── Ports: spread along a side in the order of where lines go ─
   const ports = new Map<string, Point>();
+  const bottomSide: Side = isRight ? "plusV" : "forward";
+  const visualBoxOf = (shape: ShapeState): AbstractBox => {
+    const insets = shape.portInsets;
+    if (!insets) return shape.box;
+    const [u0, u1, v0, v1] = isRight ? [insets.left, insets.right, insets.top, insets.bottom] : [insets.top, insets.bottom, insets.left, insets.right];
+    return { u: shape.box.u + u0, v: shape.box.v + v0, du: shape.box.du - u0 - u1, dv: shape.box.dv - v0 - v1 };
+  };
   for (const [shapeId, sides] of portRequests) {
     const shape = shapes.get(shapeId)!;
+    const visual = visualBoxOf(shape);
+    const visualCenterU = visual.u + visual.du / 2;
+    const visualCenterV = visual.v + visual.dv / 2;
     for (const [side, requests] of sides) {
       const sorted = [...requests].sort((first, second) => first.sortKey - second.sortKey || first.connectorId.localeCompare(second.connectorId));
-      const alongSide = side === "forward" || side === "back" ? shape.box.dv : shape.box.du;
-      const isNoteSide = shape.annotationBand > 0 && (isRight ? side === "plusV" : side === "forward");
+      const alongSide = side === "forward" || side === "back" ? visual.dv : visual.du;
+      const isNoteSide = shape.annotationBand > 0 && side === bottomSide;
       const spacing = Math.min(isNoteSide ? NOTE_SIDE_PORT_SPACING : PORT_SPACING, alongSide / (sorted.length + 1));
       sorted.forEach((request, index) => {
         const offset = (index - (sorted.length - 1) / 2) * spacing;
-        const noteShift = !isNoteSide ? 0 : isRight ? NOTE_PORT_SHIFT_RIGHT : NOTE_PORT_SHIFT_DOWN;
+        // A single line leaves from the centre, clear of a right-side note
+        // already; only a spread of lines needs to move over.
+        const noteShift = !isNoteSide ? 0 : annotationSide === "right" ? (sorted.length > 1 ? NOTE_PORT_SHIFT_RIGHT : 0) : NOTE_PORT_SHIFT_LEFT;
         const point =
           side === "forward"
-            ? { u: shape.box.u + shape.box.du, v: centerV(shape) + offset + noteShift }
+            ? { u: side === bottomSide ? shape.box.u + shape.box.du : visual.u + visual.du, v: visualCenterV + offset + noteShift }
             : side === "back"
-              ? { u: shape.box.u, v: centerV(shape) + offset }
+              ? { u: visual.u, v: visualCenterV + offset }
               : side === "plusV"
-                ? { u: centerU(shape) + offset + noteShift, v: shape.box.v + shape.box.dv }
-                : { u: centerU(shape) + offset, v: shape.box.v };
+                ? { u: visualCenterU + offset + noteShift, v: side === bottomSide ? shape.box.v + shape.box.dv : visual.v + visual.dv }
+                : { u: visualCenterU + offset, v: visual.v };
         ports.set(`${request.connectorId}:${request.end}`, { x: point.u, y: point.v });
       });
     }
@@ -359,9 +545,25 @@ export function layoutDiagram(input: LayoutInput): LayoutResult {
     } else if (route.kind === "along") {
       const channelV = rowChannels.get(`${connector.id}:row`)!;
       abstract.push({ x: start.x, y: channelV }, { x: end.x, y: channelV });
-    } else {
+    } else if (route.kind === "loop") {
       const channelU = laneChannels.get(`${connector.id}:first`)!;
       abstract.push({ x: channelU, y: start.y }, { x: channelU, y: end.y });
+    } else if (route.kind === "branch") {
+      abstract.push({ x: start.x, y: end.y });
+    } else {
+      const channelV = rowChannels.get(`${connector.id}:row`)!;
+      if (route.exitsViaBack) {
+        const firstU = laneChannels.get(`${connector.id}:first`)!;
+        abstract.push({ x: firstU, y: start.y }, { x: firstU, y: channelV });
+      } else {
+        abstract.push({ x: start.x, y: channelV });
+      }
+      if (route.entersViaForward) {
+        const lastU = laneChannels.get(`${connector.id}:last`)!;
+        abstract.push({ x: lastU, y: channelV }, { x: lastU, y: end.y });
+      } else {
+        abstract.push({ x: end.x, y: channelV });
+      }
     }
     abstract.push(end);
     connectorPaths.set(connector.id, simplify(abstract).map((point) => toReal(point.x, point.y)));
@@ -420,10 +622,23 @@ function simplify(points: Point[]): Point[] {
 // Picks the order of shapes within each lane. The score counts crossings
 // between lanes, same-lane lines that skip past other shapes, and
 // same-lane lines that run backwards (those need a loop out and around).
-// Diagrams are small, so every ordering is tried when that is affordable;
-// bigger ones fall back to barycenter sweeps. Arrival order breaks ties, so
-// a streaming diagram only moves when it helps.
-function orderLanes(lanes: string[][], connectors: LayoutConnectorInput[], neighbors: Map<string, string[]>, laneOf: (id: string) => number) {
+// Pinned shapes stay first in their lane and are not reordered. Diagrams
+// are small, so every ordering is tried when that is affordable; bigger
+// ones fall back to barycenter sweeps. Arrival order breaks ties, so a
+// streaming diagram only moves when it helps.
+function orderLanes(
+  lanes: string[][],
+  connectors: LayoutConnectorInput[],
+  neighbors: Map<string, string[]>,
+  laneOf: (id: string) => number,
+  pinned: ReadonlySet<string>,
+  groups: string[][],
+) {
+  const pinnedOf = lanes.map((ids) => ids.filter((id) => pinned.has(id)));
+  const freeOf = lanes.map((ids) => ids.filter((id) => !pinned.has(id)));
+  lanes.forEach((_, laneIndex) => (lanes[laneIndex] = [...pinnedOf[laneIndex], ...freeOf[laneIndex]]));
+  const withPinned = (free: string[][]) => free.map((ids, laneIndex) => [...pinnedOf[laneIndex], ...ids]);
+
   const arrival = new Map<string, number>();
   lanes.forEach((ids) => ids.forEach((id, index) => arrival.set(id, index)));
   const positionsOf = (candidate: string[][]) => {
@@ -451,6 +666,15 @@ function orderLanes(lanes: string[][], connectors: LayoutConnectorInput[], neigh
         if ((positions.get(aLow)! - positions.get(bLow)!) * (positions.get(aHigh)! - positions.get(bHigh)!) < 0) total += 1;
       }
     }
+    // Members of a group in the same lane want to be neighbours: every
+    // stranger between them costs.
+    for (const members of groups) {
+      for (let laneIndex = 0; laneIndex < lanes.length; laneIndex += 1) {
+        const inLane = members.filter((id) => laneOf(id) === laneIndex).map((id) => positions.get(id)!);
+        if (inLane.length < 2) continue;
+        total += (Math.max(...inLane) - Math.min(...inLane) + 1 - inLane.length) * GROUP_SPLIT_PENALTY;
+      }
+    }
     return total;
   };
   const displacement = (positions: Map<string, number>) => {
@@ -475,15 +699,15 @@ function orderLanes(lanes: string[][], connectors: LayoutConnectorInput[], neigh
     }
   };
 
-  const orderingCount = lanes.reduce((count, ids) => count * factorial(ids.length), 1);
+  const orderingCount = freeOf.reduce((count, ids) => count * factorial(ids.length), 1);
   if (orderingCount <= EXHAUSTIVE_ORDERING_LIMIT) {
-    const candidate = lanes.map((ids) => [...ids]);
+    const candidate = freeOf.map((ids) => [...ids]);
     const visitLane = (laneIndex: number) => {
       if (laneIndex === lanes.length) {
-        consider(candidate);
+        consider(withPinned(candidate));
         return;
       }
-      for (const permutation of permutations(lanes[laneIndex])) {
+      for (const permutation of permutations(freeOf[laneIndex])) {
         candidate[laneIndex] = permutation;
         visitLane(laneIndex + 1);
         if (bestScore === 0 && bestDisplacement === 0) return;
@@ -497,10 +721,12 @@ function orderLanes(lanes: string[][], connectors: LayoutConnectorInput[], neigh
         const others = (neighbors.get(id) ?? []).map((other) => positions.get(other)!);
         return others.length > 0 ? others.reduce((total, value) => total + value, 0) / others.length : positions.get(id)!;
       };
-      lanes[laneIndex] = [...lanes[laneIndex]]
+      const free = lanes[laneIndex]
+        .filter((id) => !pinned.has(id))
         .map((id) => ({ id, key: barycenter(id), index: positions.get(id)! }))
         .sort((first, second) => first.key - second.key || first.index - second.index)
         .map(({ id }) => id);
+      lanes[laneIndex] = [...pinnedOf[laneIndex], ...free];
     };
     for (let round = 0; round < ORDERING_SWEEPS; round += 1) {
       for (let laneIndex = 1; laneIndex < lanes.length; laneIndex += 1) sweep(laneIndex);
@@ -530,17 +756,24 @@ function* permutations<Item>(items: Item[]): Generator<Item[]> {
 }
 
 // Gives each shape a row so that, lane order permitting, it sits level
-// with the median of what it connects to in other lanes. Empty rows are
-// squeezed out afterwards. Returns the number of rows.
-function assignRows(lanes: string[][], shapes: Map<string, ShapeState>, neighbors: Map<string, string[]>): number {
+// with the median of what it connects to in other lanes. Pinned shapes
+// take the first row, and lanes a pinned line passes over leave it empty.
+// Empty rows are squeezed out afterwards. Returns the number of rows.
+function assignRows(
+  lanes: string[][],
+  shapes: Map<string, ShapeState>,
+  neighbors: Map<string, string[]>,
+  pinned: ReadonlySet<string>,
+  reservedFirstRow: ReadonlySet<number>,
+): number {
   const rows = new Map<string, number>();
   const place = (laneIndex: number) => {
-    let nextFree = 0;
+    let nextFree = reservedFirstRow.has(laneIndex) ? 1 : 0;
     for (const id of lanes[laneIndex]) {
       const placedNeighborRows = (neighbors.get(id) ?? [])
         .filter((other) => shapes.get(other)!.laneIndex !== laneIndex && rows.has(other))
         .map((other) => rows.get(other)!);
-      const desired = placedNeighborRows.length > 0 ? Math.floor(median(placedNeighborRows)) : nextFree;
+      const desired = pinned.has(id) ? 0 : placedNeighborRows.length > 0 ? Math.floor(median(placedNeighborRows)) : nextFree;
       const row = Math.max(desired, nextFree);
       rows.set(id, row);
       nextFree = row + 1;

@@ -210,3 +210,16 @@ export function getPictogramKeywords(name: PictogramName): string[] {
 export function isPictogramName(value: unknown): value is PictogramName {
   return typeof value === "string" && DEFINITIONS.has(value as PictogramName);
 }
+
+// A pictogram element is a square picture with its label underneath. The
+// picture is as large as the box allows once the label has its line, and
+// sits centred at the top; lines that point at the pictogram should meet
+// the picture, not the empty corners of the box.
+export const PICTOGRAM_LABEL_GAP = 6;
+const LABEL_LINE_HEIGHT = 1.25;
+
+export function getPictogramPictureBox(box: { x: number; y: number; width: number; height: number }, hasLabel: boolean, fontSize: number) {
+  const labelHeight = hasLabel ? fontSize * LABEL_LINE_HEIGHT + PICTOGRAM_LABEL_GAP : 0;
+  const size = Math.max(0, Math.min(box.width, box.height - labelHeight));
+  return { x: box.x + (box.width - size) / 2, y: box.y, width: size, height: size };
+}

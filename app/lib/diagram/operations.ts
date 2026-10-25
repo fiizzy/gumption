@@ -1,5 +1,6 @@
 import type { LineKind, ShapeKind, StrokeStyle } from "../../types";
 import { isPictogramName, type PictogramName } from "../pictograms";
+import { DIAGRAM_KIND_IDS, type DiagramKind } from "./kinds";
 
 // The streaming protocol the whiteboard agent speaks: one JSON object per
 // line, applied to the canvas the moment the line is complete. Everything
@@ -11,14 +12,27 @@ export type DiagramDirection = "down" | "right";
 export const DIAGRAM_COLORS = ["red", "green", "blue", "yellow", "violet"] as const;
 export type DiagramColor = (typeof DIAGRAM_COLORS)[number];
 
-// The geometric shapes plus a named picture from the pictogram library.
-export type DiagramShapeKind = ShapeKind | "pictogram";
+export const DEVICES = ["phone", "tablet", "desktop"] as const;
+export type Device = (typeof DEVICES)[number];
+
+// The pieces a mockup screen is built from. Each is drawn as a small group
+// of ordinary canvas elements; see mockup.ts.
+export const MOCKUP_PRIMITIVE_KINDS = ["navbar", "tabbar", "heading", "text", "button", "input", "image", "card", "list"] as const;
+export type MockupPrimitiveKind = (typeof MOCKUP_PRIMITIVE_KINDS)[number];
+
+// The geometric shapes, a named picture from the pictogram library, and
+// the mockup primitives.
+export type DiagramShapeKind = ShapeKind | "pictogram" | MockupPrimitiveKind;
 
 export interface PlanOperation {
   op: "plan";
+  kind: DiagramKind | null;
   title: string | null;
-  direction: DiagramDirection;
+  direction: DiagramDirection | null;
+  device: Device | null;
   lanes: string[];
+  // Grid kinds only: the row names, top to bottom.
+  rows: string[];
 }
 
 export interface ShapeOperation {
@@ -28,8 +42,21 @@ export interface ShapeOperation {
   icon: PictogramName | null;
   label: string;
   lane: string | null;
+  // Grid kinds only.
+  row: string | null;
   color: DiagramColor | null;
   note: string | null;
+}
+
+// A labelled box drawn behind a set of shapes (a pool, a container, a
+// subsystem) or, in a sequence diagram, around a set of messages (a
+// fragment such as a loop or an alternative).
+export interface GroupOperation {
+  op: "group";
+  id: string;
+  label: string | null;
+  members: string[];
+  color: DiagramColor | null;
 }
 
 export interface ConnectOperation {
@@ -47,6 +74,7 @@ export interface UpdateOperation {
   id: string;
   label?: string;
   lane?: string;
+  row?: string;
   color?: DiagramColor | null;
   kind?: DiagramShapeKind;
   icon?: PictogramName | null;
@@ -74,6 +102,7 @@ export type DiagramOperation =
   | PlanOperation
   | ShapeOperation
   | ConnectOperation
+  | GroupOperation
   | UpdateOperation
   | RemoveOperation
   | NoteOperation
@@ -85,13 +114,69 @@ export type ParsedOperationLine =
   // Prose, blank lines and code fences: not part of the protocol.
   | { kind: "ignored" };
 
-const SHAPE_KINDS: readonly DiagramShapeKind[] = ["rectangle", "ellipse", "diamond", "pictogram"];
+const GEOMETRIC_SHAPE_KINDS: readonly DiagramShapeKind[] = ["rectangle", "ellipse", "diamond", "pictogram"];
+const SHAPE_KINDS: readonly DiagramShapeKind[] = [...GEOMETRIC_SHAPE_KINDS, ...MOCKUP_PRIMITIVE_KINDS];
 const LINE_KINDS: readonly LineKind[] = ["line", "arrow"];
 const CONNECTOR_STYLES: readonly StrokeStyle[] = ["solid", "dashed", "dotted"];
 const DIRECTIONS: readonly DiagramDirection[] = ["down", "right"];
 const MAX_LABEL_LENGTH = 200;
 const MAX_TEXT_LENGTH = 600;
 const CODE_FENCE_PREFIX = "```";
+
+// Words the agent may reasonably use for a kind instead of its id.
+const KIND_ALIASES: Record<string, DiagramKind> = {
+  flowchart: "flow",
+  process: "flow",
+  swimlanes: "swimlane",
+  bpmn: "swimlane",
+  architecture: "layers",
+  layer: "layers",
+  "site-map": "sitemap",
+  "site map": "sitemap",
+  hierarchy: "tree",
+  orgchart: "tree",
+  "org chart": "tree",
+  wireframe: "mockup",
+  screen: "mockup",
+  "screen-flow": "screens",
+  "screen flow": "screens",
+  "user-flow": "screens",
+  "user flow": "screens",
+  "mind map": "mindmap",
+  "mind-map": "mindmap",
+  brainstorm: "mindmap",
+  "sequence diagram": "sequence",
+  messages: "sequence",
+  kanban: "grid",
+  board: "grid",
+  matrix: "grid",
+  table: "grid",
+  "journey map": "grid",
+  "journey-map": "grid",
+  affinity: "grid",
+};
+
+function readNames(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.flatMap((entry) => {
+        const name = readText(entry, MAX_LABEL_LENGTH);
+        return name ? [name] : [];
+      })
+    : [];
+}
+
+function readIds(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.flatMap((entry) => {
+        const id = readId(entry);
+        return id ? [id] : [];
+      })
+    : [];
+}
+
+export function isMockupPrimitiveKind(kind: DiagramShapeKind): kind is MockupPrimitiveKind {
+  return (MOCKUP_PRIMITIVE_KINDS as readonly string[]).includes(kind);
+}
 
 let generatedIdCounter = 0;
 function generateId(prefix: string): string {
@@ -121,6 +206,12 @@ function readOptionalEnum<Value extends string>(value: unknown, allowed: readonl
   return typeof value === "string" && allowed.includes(value as Value) ? (value as Value) : null;
 }
 
+function readKind(value: unknown): DiagramKind | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim().toLowerCase();
+  return readOptionalEnum(normalized, DIAGRAM_KIND_IDS) ?? KIND_ALIASES[normalized] ?? null;
+}
+
 function parseOperation(value: unknown): ParsedOperationLine {
   if (!isRecord(value) || typeof value.op !== "string") return { kind: "invalid", reason: "missing op" };
   switch (value.op) {
@@ -129,14 +220,12 @@ function parseOperation(value: unknown): ParsedOperationLine {
         kind: "operation",
         operation: {
           op: "plan",
+          kind: readKind(value.kind),
           title: readText(value.title, MAX_LABEL_LENGTH),
-          direction: readEnum(value.direction, DIRECTIONS, "right"),
-          lanes: Array.isArray(value.lanes)
-            ? value.lanes.flatMap((lane) => {
-                const name = readText(lane, MAX_LABEL_LENGTH);
-                return name ? [name] : [];
-              })
-            : [],
+          direction: readOptionalEnum(value.direction, DIRECTIONS),
+          device: readOptionalEnum(value.device, DEVICES),
+          lanes: readNames(value.lanes ?? value.screens ?? value.columns),
+          rows: readNames(value.rows),
         },
       };
     case "shape": {
@@ -155,10 +244,21 @@ function parseOperation(value: unknown): ParsedOperationLine {
           kind: kind === "pictogram" && !icon ? "rectangle" : kind,
           icon,
           label,
-          lane: readText(value.lane, MAX_LABEL_LENGTH),
+          lane: readText(value.lane, MAX_LABEL_LENGTH) ?? readText(value.screen, MAX_LABEL_LENGTH) ?? readText(value.column, MAX_LABEL_LENGTH),
+          row: readText(value.row, MAX_LABEL_LENGTH),
           color: readOptionalEnum(value.color, DIAGRAM_COLORS),
           note: readText(value.note, MAX_TEXT_LENGTH),
         },
+      };
+    }
+    case "group": {
+      const id = readId(value.id);
+      if (!id) return { kind: "invalid", reason: "group without an id" };
+      const members = readIds(value.members);
+      if (members.length === 0) return { kind: "invalid", reason: `group "${id}" without members` };
+      return {
+        kind: "operation",
+        operation: { op: "group", id, label: readText(value.label, MAX_LABEL_LENGTH), members, color: readOptionalEnum(value.color, DIAGRAM_COLORS) },
       };
     }
     case "connect": {
@@ -184,8 +284,10 @@ function parseOperation(value: unknown): ParsedOperationLine {
       const operation: UpdateOperation = { op: "update", id };
       const label = readText(value.label, MAX_LABEL_LENGTH);
       if (label) operation.label = label;
-      const lane = readText(value.lane, MAX_LABEL_LENGTH);
+      const lane = readText(value.lane, MAX_LABEL_LENGTH) ?? readText(value.screen, MAX_LABEL_LENGTH) ?? readText(value.column, MAX_LABEL_LENGTH);
       if (lane) operation.lane = lane;
+      const row = readText(value.row, MAX_LABEL_LENGTH);
+      if (row) operation.row = row;
       if ("color" in value) operation.color = readOptionalEnum(value.color, DIAGRAM_COLORS);
       const kind = readOptionalEnum(value.kind, SHAPE_KINDS);
       const icon = isPictogramName(value.icon) ? value.icon : null;

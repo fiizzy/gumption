@@ -1,4 +1,4 @@
-import { test, expect, expectSavedNodes, renderedNodes, savedNodes, storedState } from "./fixtures";
+import { drag, test, expect, expectSavedNodes, renderedNodes, savedNodes, storedState } from "./fixtures";
 import type { Page } from "@playwright/test";
 
 const CODEBASE_FOLDER = "/Users/demo/Projects/demo";
@@ -56,10 +56,10 @@ async function connectCodebase(page: Page) {
   await page.waitForSelector(".react-flow__pane");
 }
 
-// Every labelled shape: the frame drawn around a diagram is a shape too,
-// but an unlabelled one.
-const shapes = (page: Page) => page.locator(".react-flow__node-shapeElement").filter({ hasText: /\S/ });
-const frames = (page: Page) => page.locator(".react-flow__node-shapeElement").filter({ hasNotText: /\S/ });
+// Every labelled shape. The artboard drawn around a diagram is a shape
+// too, named by a tag above it, so it is told apart by its marker.
+const shapes = (page: Page) => page.locator(".react-flow__node-shapeElement").filter({ hasText: /\S/ }).filter({ hasNot: page.locator("[data-artboard]") });
+const artboards = (page: Page) => page.locator(".react-flow__node-shapeElement").filter({ has: page.locator("[data-artboard]") });
 const lines = (page: Page) => page.locator(".react-flow__node-lineElement");
 // Connectors are arrows; the short leaders that tie side-notes to their
 // shapes are plain lines.
@@ -79,8 +79,8 @@ test.describe("the whiteboard agent", () => {
     await expect(page.getByRole("status", { name: "Working…" })).toBeVisible();
 
     await expect(shapes(page)).toHaveCount(3);
-    // Two connectors plus a leader for each of the two side-notes on the API.
-    await expect(lines(page)).toHaveCount(4);
+    // Two connectors plus the tick that hangs the API's note block.
+    await expect(lines(page)).toHaveCount(3);
     await expect(conversation(page)).toContainText("Client, API and database");
     await expect(conversation(page)).toContainText("Drew the demo flow across three lanes.");
     await expect(conversation(page)).toContainText("3 shapes, 2 connections");
@@ -90,21 +90,23 @@ test.describe("the whiteboard agent", () => {
 
     const texts = (await renderedNodes(page)).filter((node) => node.type === "textElement").map((node) => node.text);
     expect(texts).toEqual(
-      expect.arrayContaining(["Demo flow", "Client", "Server", "Data", "POST /pay", "src/server/\npayments.ts", "Retries three\ntimes"]),
+      expect.arrayContaining(["Demo flow", "Client", "Server", "Data", "POST /pay", "src/server/\npayments.ts\nRetries three\ntimes"]),
     );
-    // The file path is a side-note beside the shape (wrapped after the
-    // slash), not a line inside it.
+    // The file path and the remark are one side-note block under the shape
+    // (the path wrapped after the slash), not lines inside it.
     await expect(shapes(page).filter({ hasText: "Payments API" })).not.toContainText("src/server/payments.ts");
     const saved = await savedNodes(page);
     const savedLines = saved.filter((node) => node.type === "lineElement");
-    expect(savedLines).toHaveLength(4);
+    expect(savedLines).toHaveLength(3);
     expect(savedLines.every((line) => line.data.startBinding && line.data.endBinding)).toBe(true);
     const apiNode = saved.find((node) => node.data.label === "Payments API")!;
-    const noteNode = saved.find((node) => node.data.text === "src/server/\npayments.ts")!;
+    const noteNode = saved.find((node) => node.data.text === "src/server/\npayments.ts\nRetries three\ntimes")!;
     const leaders = savedLines.filter((line) => !isConnector(line));
-    expect(leaders).toHaveLength(2);
-    expect(leaders.every((line) => line.data.endBinding.elementId === apiNode.id)).toBe(true);
-    expect(leaders.some((line) => line.data.startBinding.elementId === noteNode.id)).toBe(true);
+    expect(leaders).toHaveLength(1);
+    expect(leaders[0].data.startBinding.elementId).toBe(apiNode.id);
+    expect(leaders[0].data.endBinding.elementId).toBe(noteNode.id);
+    // The tick is a short straight drop from the shape to the block.
+    expect(leaders[0].data.points[0].x).toBe(leaders[0].data.points[1].x);
     // The note sits below the shape and to its right, clear of the arrows.
     expect(noteNode.position.y).toBeGreaterThan(apiNode.position.y + apiNode.data.height);
     expect(noteNode.position.x).toBeGreaterThan(apiNode.position.x + apiNode.data.width / 2);
@@ -307,6 +309,34 @@ test.describe("Claude Code readiness and failures", () => {
     await expect(page.getByRole("button", { name: "Model" })).toContainText("Opus");
   });
 
+  test("the diagram picker pins a kind in the system prompt and remembers the choice", async ({ canvas: page }) => {
+    await setReply(page, DEMO_OPERATIONS, 300);
+    await askToDraw(page, "Draw whatever fits");
+    await expect(shapes(page)).toHaveCount(3);
+    const [autoCall] = await aiCalls(page);
+    const autoPrompt = autoCall.args[autoCall.args.indexOf("--append-system-prompt") + 1];
+    expect(autoPrompt).toContain("DIAGRAM KINDS");
+    expect(autoPrompt).not.toContain("THE PERSON'S CHOICE");
+
+    await page.getByRole("button", { name: "Diagram" }).click();
+    // The menu opens from the control's start so it stays on screen.
+    const menu = page.getByRole("listbox", { name: "Diagram" });
+    const menuBox = (await menu.boundingBox())!;
+    expect(menuBox.x).toBeGreaterThanOrEqual(0);
+    expect(menuBox.x + menuBox.width).toBeLessThanOrEqual(1600);
+    await expect(menu.getByRole("option")).toHaveCount(11);
+    await page.getByRole("option", { name: /Site map/ }).click();
+    await askToDraw(page, "Draw it as a site map");
+    await expect(shapes(page)).toHaveCount(6);
+    const calls = await aiCalls(page);
+    const pinnedPrompt = calls[1].args[calls[1].args.indexOf("--append-system-prompt") + 1];
+    expect(pinnedPrompt).toContain("THE PERSON'S CHOICE");
+    expect(pinnedPrompt).toContain('set the diagram kind to "sitemap"');
+    await page.reload();
+    await page.waitForSelector(".react-flow__pane");
+    await expect(page.getByRole("button", { name: "Diagram" })).toContainText("Site map");
+  });
+
   test("warns before drawing when Claude Code is out of date, with the matching update command", async ({ canvas: page }) => {
     await setClaudeVersionOutput(page, "/usr/local/lib/node_modules/@anthropic-ai/claude-code/cli.js\n2.1.5 (Claude Code)");
     await page.reload();
@@ -382,5 +412,95 @@ test.describe("pictograms", () => {
     await page.keyboard.press("Escape");
     await page.mouse.click(1400, 900);
     await expect(library).toHaveCount(0);
+  });
+});
+
+test.describe("artboards", () => {
+  // Changes the agent sends for "rename the API, drop the database, add a cache".
+  const EDIT_OPERATIONS = [
+    "Renaming the API, swapping the database for a cache.",
+    { op: "update", id: "api", label: "Billing API" },
+    { op: "remove", id: "db" },
+    { op: "shape", id: "cache", kind: "rectangle", label: "Redis cache", lane: "Data", color: "red" },
+    { op: "connect", from: "api", to: "cache", label: "read through" },
+    { op: "done", summary: "Renamed the API and replaced the database with a cache." },
+  ]
+    .map((line) => (typeof line === "string" ? line : JSON.stringify(line)))
+    .join("\n");
+
+  const savedArtboard = async (page: Page) => (await savedNodes(page)).find((node) => node.data.artboard)!;
+
+  test("a drawing sits on an artboard that moves as one, is changed in place from a selection, and deletes as one", async ({ canvas: page }) => {
+    await setReply(page, DEMO_OPERATIONS, 300);
+    await askToDraw(page, "Client, API and database");
+    await expect(conversation(page)).toContainText("Drew the demo flow across three lanes.");
+    await expect(artboards(page)).toHaveCount(1);
+    await expect(artboards(page)).toContainText("Demo flow");
+    await expectSavedNodes(page, (nodes) => nodes.some((node) => node.data.artboard), "saved with its artboard");
+
+    // The artboard knows every node the drawing made.
+    const before = await savedNodes(page);
+    const artboard = before.find((node) => node.data.artboard)!;
+    expect(artboard.data.artboard.name).toBe("Demo flow");
+    expect(new Set(artboard.data.artboard.memberIds)).toEqual(new Set(before.filter((node) => node !== artboard).map((node) => node.id)));
+
+    // Dragging it by its name brings everything on it along.
+    const apiBefore = before.find((node) => node.data.label === "Payments API")!;
+    const tag = artboards(page).getByText("Demo flow", { exact: true }).last();
+    const tagBox = (await tag.boundingBox())!;
+    await drag(page, { x: tagBox.x + 20, y: tagBox.y + tagBox.height / 2 }, { x: tagBox.x + 220, y: tagBox.y + tagBox.height / 2 + 120 });
+    await expectSavedNodes(page, (nodes) => nodes.find((node) => node.data.artboard)!.position.x !== artboard.position.x, "artboard moved");
+    const moved = await savedNodes(page);
+    const movedArtboard = moved.find((node) => node.data.artboard)!;
+    const deltaX = movedArtboard.position.x - artboard.position.x;
+    const deltaY = movedArtboard.position.y - artboard.position.y;
+    expect(Math.abs(deltaX)).toBeGreaterThan(50);
+    const apiMoved = moved.find((node) => node.id === apiBefore.id)!;
+    expect(apiMoved.position.x - apiBefore.position.x).toBeCloseTo(deltaX, 0);
+    expect(apiMoved.position.y - apiBefore.position.y).toBeCloseTo(deltaY, 0);
+
+    // Selecting anything on it makes it the drawing the next message changes.
+    await shapes(page).filter({ hasText: "Payments API" }).click();
+    const composer = chat(page);
+    await expect(composer.getByRole("status").filter({ hasText: "Changing" })).toContainText("Demo flow");
+    const input = page.getByPlaceholder("Describe a change to Demo flow…");
+    await expect(input).toBeVisible();
+
+    await setReply(page, EDIT_OPERATIONS, 300);
+    await input.fill("Rename the API to Billing API and use a cache instead of the database");
+    await input.press("Enter");
+    await expect(conversation(page)).toContainText("Renamed the API and replaced the database with a cache.");
+
+    // Changed in place: same artboard, same spot, no second drawing.
+    await expect(artboards(page)).toHaveCount(1);
+    await expect(shapes(page).filter({ hasText: "Billing API" })).toHaveCount(1);
+    await expect(shapes(page).filter({ hasText: "Redis cache" })).toHaveCount(1);
+    await expect(shapes(page).filter({ hasText: "Database" })).toHaveCount(0);
+    await expect(shapes(page).filter({ hasText: "Browser" })).toHaveCount(1);
+    await expectSavedNodes(page, (nodes) => nodes.some((node) => node.data.label === "Redis cache"), "edit saved");
+    const edited = await savedArtboard(page);
+    expect(edited.id).toBe(movedArtboard.id);
+    expect(edited.position).toEqual(movedArtboard.position);
+    await expect(artboards(page)).toBeInViewport();
+
+    const calls = await aiCalls(page);
+    const editPrompt = calls[1].args[calls[1].args.indexOf("-p") + 1];
+    expect(editPrompt).toContain("EDITING A DRAWING ON THE CANVAS");
+    expect(editPrompt).toContain('api "Payments API"');
+    expect(editPrompt.trim().endsWith("use a cache instead of the database")).toBe(true);
+    // The composer is back to drawing something new once the change is sent.
+    await expect(page.getByPlaceholder("Describe a diagram to draw…")).toBeVisible();
+
+    // The chat can show a drawing and pick it to change again.
+    await conversation(page).getByRole("button", { name: "Change" }).first().click();
+    await expect(composer.getByRole("status").filter({ hasText: "Changing" })).toContainText("Demo flow");
+    await expect(page.getByPlaceholder("Describe a change to Demo flow…")).toBeFocused();
+    await composer.getByRole("button", { name: "Draw something new instead" }).click();
+    await expect(page.getByPlaceholder("Describe a diagram to draw…")).toBeVisible();
+
+    // Deleting the artboard takes everything on it.
+    await artboards(page).getByText("Demo flow", { exact: true }).last().click();
+    await page.keyboard.press("Delete");
+    await expect(page.locator(".react-flow__node")).toHaveCount(0);
   });
 });

@@ -23,6 +23,11 @@ const LABEL_PADDING = 8;
 const NOTE_GAP = 2;
 const NOTE_FONT_SIZE_RATIO = 0.78;
 const NOTE_OPACITY = 0.8;
+// An artboard's name sits just above its top-left corner, as in a design
+// tool: the handle for selecting and moving the whole drawing.
+const ARTBOARD_NAME_HEIGHT = 22;
+const ARTBOARD_NAME_GAP = 4;
+const ARTBOARD_NAME_MAX_WIDTH = 360;
 
 function ShapeElement({ data, selected }: NodeProps<HydratedShapeElementNode>) {
   const {
@@ -32,6 +37,7 @@ function ShapeElement({ data, selected }: NodeProps<HydratedShapeElementNode>) {
     seed,
     label,
     note,
+    artboard,
     strokeColor,
     backgroundColor,
     fillStyle,
@@ -56,7 +62,7 @@ function ShapeElement({ data, selected }: NodeProps<HydratedShapeElementNode>) {
   const hasFill = backgroundColor !== TRANSPARENT_COLOR;
 
   return (
-    <div className="relative group text-foreground" style={{ width, height }}>
+    <div className="relative group text-foreground" style={{ width, height }} data-artboard={artboard ? "" : undefined}>
       <svg className="absolute inset-0 overflow-visible" width={width} height={height} style={{ opacity: opacity / 100 }}>
         {/* Invisible hit target: the stroke band always, the interior only
             when filled — so a transparent shape drawn around other
@@ -130,8 +136,22 @@ function ShapeElement({ data, selected }: NodeProps<HydratedShapeElementNode>) {
         </div>
       )}
 
-      {!isEditing && <AnchorHandles visible={selected} />}
-      {selected && !isEditing && (
+      {artboard && (
+        <div
+          className={cn(
+            "absolute left-0 flex items-center gap-1.5 px-1 font-sans text-[12px] font-medium truncate cursor-move select-none transition-colors",
+            selected ? "text-accent" : "text-foreground-muted hover:text-foreground",
+          )}
+          style={{ bottom: height + ARTBOARD_NAME_GAP, height: ARTBOARD_NAME_HEIGHT, maxWidth: Math.min(width, ARTBOARD_NAME_MAX_WIDTH), pointerEvents: "auto" }}
+        >
+          {artboard.name}
+        </div>
+      )}
+
+      {/* An artboard is laid out by the agent and moves as one: it takes no
+          connectors and is not resized by hand. */}
+      {!isEditing && !artboard && <AnchorHandles visible={selected} />}
+      {selected && !isEditing && !artboard && (
         <ResizeHandles minWidth={SHAPE_MIN_SIZE} minHeight={SHAPE_MIN_SIZE} onResize={onResizeElement} />
       )}
     </div>

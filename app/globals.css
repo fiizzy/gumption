@@ -144,7 +144,36 @@
   background: var(--color-foreground-muted);
 }
 
+/* ── Welcome tour sketch ──
+   Each rough stroke is normalized to a path length of 1 and drawn by
+   running its dash offset down to 0; labels appear once their shape is
+   drawn. Delays are set per element inline. */
+.cc-sketch-stroke {
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  animation: cc-sketch-draw 0.55s ease-out both;
+}
+.cc-sketch-label {
+  opacity: 0;
+  animation: cc-sketch-appear 0.3s ease-out both;
+}
+
 /* ── Keyframes ── */
+@keyframes cc-sketch-draw {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes cc-sketch-appear {
+  to {
+    opacity: 1;
+  }
+}
+
 @keyframes cc-fadein {
   from {
     opacity: 0;
@@ -185,8 +214,16 @@
 }
 
 /* Under Reduce Motion the fades and the toast still appear and
-   disappear; only their movement goes. */
+   disappear; only their movement goes. The tour's sketch arrives drawn. */
 @media (prefers-reduced-motion: reduce) {
+  .cc-sketch-stroke {
+    stroke-dashoffset: 0;
+    animation: none;
+  }
+  .cc-sketch-label {
+    opacity: 1;
+    animation: none;
+  }
   @keyframes cc-fadein {
     from {
       opacity: 0;

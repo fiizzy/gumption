@@ -34,6 +34,7 @@ import MainMenu from "./MainMenu";
 import ConfirmDialog, { type ConfirmRequest } from "./ConfirmDialog";
 import ExportDialog, { type ExportSettings } from "./ExportDialog";
 import ShortcutsDialog from "./ShortcutsDialog";
+import OnboardingDialog from "./OnboardingDialog";
 import { ANCHOR_HANDLE_PREFIX } from "./AnchorHandles";
 import ChatPanel, { CHAT_PANEL_WIDTH, CHAT_PANEL_COLLAPSED_WIDTH } from "./ChatPanel";
 import {
@@ -74,6 +75,8 @@ import { FRAME_PADDING, type DiagramChange } from "../lib/diagram/builder";
 import { toChatTurns, type ChatMessage } from "../lib/chat";
 import { isPictogramName, type PictogramName } from "../lib/pictograms";
 import { DEFAULT_PROJECT_TITLE, useProjects } from "../lib/useProjects";
+import { hasSeenOnboarding, markOnboardingSeen } from "../lib/onboarding";
+import { SAMPLE_DIAGRAM_INTRODUCTION, SAMPLE_DIAGRAM_SUMMARY, buildSampleDiagram } from "../lib/sampleDiagram";
 import {
   CANVAS_FILE_EXTENSION,
   createCanvasDocument,
@@ -356,6 +359,7 @@ function WhiteboardInner() {
   const [isExportOpen, setIsExportOpen] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [isShortcutsOpen, setIsShortcutsOpen] = useState(false);
+  const [isOnboardingOpen, setIsOnboardingOpen] = useState(false);
   const [notice, setNotice] = useState<Notice | null>(null);
 
   const nodesRef = useRef<CanvasNode[]>([]);
@@ -1372,7 +1376,48 @@ function WhiteboardInner() {
     [getVisibleNodes, notify, projectTitle],
   );
 
-  const isAnyDialogOpen = confirmRequest !== null || isExportOpen || isShortcutsOpen;
+  // The welcome tour opens once, on the first launch, after the project has
+  // loaded underneath it; the menu brings it back any time.
+  useEffect(() => {
+    if (projects.isReady && !hasSeenOnboarding()) setIsOnboardingOpen(true);
+  }, [projects.isReady]);
+
+  const closeOnboarding = useCallback(() => {
+    markOnboardingSeen();
+    setIsOnboardingOpen(false);
+  }, []);
+
+  // Leaves the tour with a finished drawing to look around, recorded in the
+  // chat the way an answer would be so Show and Change work on it.
+  const exploreSample = useCallback(() => {
+    closeOnboarding();
+    const sample = buildSampleDiagram(getDiagramOrigin(), currentStyle);
+    if (!sample) return;
+    setNodes((previous) => deselectAll(previous));
+    applyDiagramChange(sample.change);
+    setMessages((previous) => [
+      ...previous,
+      {
+        id: crypto.randomUUID(),
+        role: "assistant",
+        text: SAMPLE_DIAGRAM_INTRODUCTION,
+        createdAt: Date.now(),
+        diagram: {
+          summary: SAMPLE_DIAGRAM_SUMMARY,
+          counts: sample.counts,
+          outline: sample.outline,
+          skippedCount: 0,
+          wasStopped: false,
+          isUndone: false,
+          artboardId: sample.artboardId,
+          wasEdit: false,
+        },
+      },
+    ]);
+    followDiagram(sample.bounds, { isRequested: true });
+  }, [applyDiagramChange, closeOnboarding, currentStyle, followDiagram, getDiagramOrigin]);
+
+  const isAnyDialogOpen = confirmRequest !== null || isExportOpen || isShortcutsOpen || isOnboardingOpen;
 
   // ── Keyboard shortcuts ─────────────────────────────────────────
   // Handlers read the latest closures through a ref so the window
@@ -1756,6 +1801,7 @@ function WhiteboardInner() {
             onExportImage={() => setIsExportOpen(true)}
             onClearCanvas={requestClearCanvas}
             onShowShortcuts={() => setIsShortcutsOpen(true)}
+            onShowWelcome={() => setIsOnboardingOpen(true)}
           />
         }
       />
@@ -1965,6 +2011,13 @@ function WhiteboardInner() {
         onExport={(settings) => void exportImage(settings)}
       />
       <ShortcutsDialog isOpen={isShortcutsOpen} onClose={() => setIsShortcutsOpen(false)} />
+      <OnboardingDialog
+        isOpen={isOnboardingOpen}
+        claudeCode={claudeCode}
+        onRecheckClaudeCode={() => void recheckClaudeCode()}
+        onClose={closeOnboarding}
+        onExploreSample={exploreSample}
+      />
     </div>
   );
 }

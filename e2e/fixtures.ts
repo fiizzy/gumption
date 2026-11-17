@@ -25,7 +25,8 @@ export interface RenderedNode {
 // it "read" a file first, and watch `__AI_CALLS` and `__AI_KILLS` for what
 // the app asked of it. The launch-time `claude --version` check answers with
 // the localStorage entry `test:claude-version` (path and version lines; empty
-// means not installed), defaulting to a current native install.
+// means not installed, a path alone means installed but unable to start),
+// defaulting to a current native install.
 function installTauriStub() {
   type SpawnArguments = { program: string; args: string[]; options: unknown; onEvent: { id: number } };
   type StubWindow = Window &
@@ -38,6 +39,8 @@ function installTauriStub() {
       __AI_KILLS: { pid: number }[];
     };
   const stubWindow = window as unknown as StubWindow;
+  // Tests start past the welcome tour unless they ask for a first launch.
+  if (localStorage.getItem("test:first-launch") !== "1") localStorage.setItem("canvas-chat:onboarding", "1");
   stubWindow.__AI_DELAY = 300;
   stubWindow.__AI_CALLS = [];
   stubWindow.__AI_KILLS = [];

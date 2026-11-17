@@ -25,6 +25,9 @@ const API_ERROR_PATTERN = /API Error: (\d+) (\{[\s\S]*\})/;
 const INSTALLED_VERSION_PATTERN = /Claude Code (\d+\.\d+\.\d+)/;
 const REQUIRED_VERSION_PATTERN = /version (\d+\.\d+\.\d+) or newer/;
 const MISSING_BINARY_PATTERN = /no such file or directory|program not found|not found|os error 2|ENOENT/i;
+// Claude Code's own message when an npm install skipped the platform
+// package that holds its native binary.
+const NATIVE_BINARY_MISSING_PATTERN = /native binary not installed/i;
 const AUTHENTICATION_PATTERN = /not logged in|\/login|invalid api key|authentication|unauthorized/i;
 const PROMPT_TOO_LONG_PATTERN = /prompt is too long|too many tokens|context window/i;
 const NETWORK_PATTERN = /ENOTFOUND|ECONNREFUSED|ECONNRESET|ETIMEDOUT|fetch failed|getaddrinfo|network|connection error/i;
@@ -39,6 +42,9 @@ export type ClaudeCodeStatus =
   | { kind: "checking" }
   | { kind: "ready"; version: string; installKind: InstallKind }
   | { kind: "missing" }
+  // The claude command exists but cannot start: an npm install without
+  // its native binary.
+  | { kind: "broken"; path: string }
   | { kind: "outdated"; version: string; minimumVersion: string; installKind: InstallKind };
 
 export type FailureAction =
@@ -99,9 +105,10 @@ export async function checkClaudeCode(): Promise<ClaudeCodeStatus> {
     const result = await runToCompletion(Command.create(VERSION_COMMAND_NAME, isWindows ? WINDOWS_VERSION_ARGUMENTS : UNIX_VERSION_ARGUMENTS));
     const lines = result.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
     const versionLine = lines.find((line) => VERSION_PATTERN.test(line));
-    if (result.code !== 0 || !versionLine) return { kind: "missing" };
-    const version = VERSION_PATTERN.exec(versionLine)![0];
     const binaryPath = lines.find((line) => line !== versionLine) ?? "";
+    if (!versionLine) return binaryPath ? { kind: "broken", path: binaryPath } : { kind: "missing" };
+    if (result.code !== 0) return { kind: "missing" };
+    const version = VERSION_PATTERN.exec(versionLine)![0];
     const installKind: InstallKind = isWindows ? "unknown" : NPM_INSTALL_PATH_PATTERN.test(binaryPath) ? "npm" : "native";
     if (compareVersions(version, MINIMUM_CLAUDE_CODE_VERSION) < 0) {
       return { kind: "outdated", version, minimumVersion: MINIMUM_CLAUDE_CODE_VERSION, installKind };
@@ -160,6 +167,15 @@ export function describeMissing(): AgentFailure {
   };
 }
 
+export function describeBroken(path: string | null): AgentFailure {
+  return {
+    title: "Claude Code is installed but won't start",
+    explanation: "Its native binary is missing, which happens when an npm install skips optional packages. Reinstall it in a terminal, then check again.",
+    actions: [{ kind: "command", command: NPM_UPDATE_COMMAND }, { kind: "link", label: "Setup guide", url: SETUP_GUIDE_URL }, { kind: "retry" }],
+    details: `${path ?? "The claude command"} exists, but claude --version failed because the native binary it launches is missing.`,
+  };
+}
+
 // Turns whatever came back from a failed run into something to act on.
 // Known failures are matched on error codes and statuses, not wording, so
 // they survive Claude Code's copy changes; anything else shows the sentence
@@ -173,6 +189,9 @@ export function describeAgentFailure(raw: string, status: ClaudeCodeStatus): Age
     const installed = INSTALLED_VERSION_PATTERN.exec(message)?.[1] ?? (status.kind === "outdated" || status.kind === "ready" ? status.version : "installed");
     const required = REQUIRED_VERSION_PATTERN.exec(message)?.[1] ?? MINIMUM_CLAUDE_CODE_VERSION;
     return { ...describeOutdated(installed, required, installKindFrom(status)), details: raw };
+  }
+  if (!apiError && NATIVE_BINARY_MISSING_PATTERN.test(raw)) {
+    return { ...describeBroken(status.kind === "broken" ? status.path : null), details: raw };
   }
   if (!apiError && MISSING_BINARY_PATTERN.test(raw)) {
     return { ...describeMissing(), details: raw };

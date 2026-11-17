@@ -289,6 +289,9 @@ test.describe("the whiteboard agent", () => {
 const VERSION_TOO_OLD_ERROR =
   'API Error: 400 {"type":"error","error":{"type":"invalid_request_error","message":"Claude Code 2.1.5 does not support this model; version 2.1.251 or newer is required. Run \'claude update\', or update the Claude desktop app, then try again.","details":{"error_code":"claude_code_version_too_old"}},"request_id":"req_011CgLAX6buHAPytXzApQVbX"}';
 
+const NATIVE_BINARY_MISSING_ERROR =
+  "Claude exited with code 1: Error: claude native binary not installed. Either postinstall did not run (--ignore-scripts, some pnpm configs) or the platform-native optional dependency was not downloaded (--omit=optional).";
+
 async function setClaudeVersionOutput(page: Page, output: string) {
   await page.evaluate((value) => localStorage.setItem("test:claude-version", value), output);
 }
@@ -361,6 +364,23 @@ test.describe("Claude Code readiness and failures", () => {
     await expect(banner).toContainText("Claude Code isn't installed");
     await expect(banner.locator("code")).toHaveText("curl -fsSL https://claude.ai/install.sh | bash");
     await expect(banner.getByRole("button", { name: "Setup guide" })).toBeVisible();
+  });
+
+  test("warns when Claude Code is installed but its native binary is missing, with the reinstall command", async ({ canvas: page }) => {
+    await setClaudeVersionOutput(page, "/usr/local/bin/claude");
+    await page.reload();
+    await page.waitForSelector(".react-flow__pane");
+    const banner = chat(page).getByRole("status");
+    await expect(banner).toContainText("Claude Code is installed but won't start");
+    await expect(banner.locator("code")).toHaveText("npm install -g @anthropic-ai/claude-code@latest");
+  });
+
+  test("a run that dies for want of the native binary names the reinstall", async ({ canvas: page }) => {
+    await page.evaluate((error) => ((window as unknown as { __AI_ERROR: string }).__AI_ERROR = error), NATIVE_BINARY_MISSING_ERROR);
+    await askToDraw(page, "Architecture overview");
+    const alert = chat(page).getByRole("alert");
+    await expect(alert).toContainText("Claude Code is installed but won't start");
+    await expect(alert.locator("code")).toHaveText("npm install -g @anthropic-ai/claude-code@latest");
   });
 
   test("a failed run names the fix, shows the command, and keeps the raw error behind Details", async ({ canvas: page }) => {

@@ -7,7 +7,7 @@ import type { ChatMessage } from "../lib/chat";
 import type { DiagramSessionStatus } from "../lib/useDiagramSession";
 import type { DiagramCounts } from "../lib/diagram/builder";
 import type { ProjectSummary } from "../lib/projectStore";
-import { describeMissing, describeOutdated, type AgentFailure, type ClaudeCodeStatus } from "../lib/claudeCode";
+import { describeBroken, describeMissing, describeOutdated, type AgentFailure, type ClaudeCodeStatus } from "../lib/claudeCode";
 import { MODEL_OPTIONS, type ModelChoice } from "../lib/modelPreference";
 import { KIND_OPTIONS, type DiagramKindChoice } from "../lib/kindPreference";
 import { cn } from "../lib/cn";
@@ -69,6 +69,7 @@ function formatCounts({ shapes, connectors }: DiagramCounts): string {
 // typing happens, instead of after a request has already failed.
 function readinessNotice(claudeCode: ClaudeCodeStatus): AgentFailure | null {
   if (claudeCode.kind === "missing") return describeMissing();
+  if (claudeCode.kind === "broken") return describeBroken(claudeCode.path);
   if (claudeCode.kind === "outdated") return describeOutdated(claudeCode.version, claudeCode.minimumVersion, claudeCode.installKind);
   return null;
 }

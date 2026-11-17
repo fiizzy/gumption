@@ -14,7 +14,7 @@ The agent is [Claude Code](https://docs.anthropic.com/en/docs/claude-code), run 
 
 ```bash
 npm install
-npm run tauri:dev    # the desktop app (needs Rust and the Claude Code CLI on PATH)
+npm run tauri:dev    # the desktop app (needs Rust and a working Claude Code: on PATH, from the native installer, or bundled with the VS Code extension)
 npm run dev          # the canvas alone in a browser, without the agent
 npm run test:e2e     # Playwright tests against the dev server, with the agent stubbed
 ```

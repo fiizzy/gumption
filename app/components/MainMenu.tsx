@@ -9,6 +9,7 @@ import {
   faFloppyDisk,
   faFileExport,
   faBroom,
+  faCircleInfo,
   faKeyboard,
 } from "@fortawesome/free-solid-svg-icons";
 import { cn } from "../lib/cn";
@@ -28,9 +29,10 @@ interface Props {
   onExportImage: () => void;
   onClearCanvas: () => void;
   onShowShortcuts: () => void;
+  onShowWelcome: () => void;
 }
 
-export default function MainMenu({ onOpenFile, onSaveFile, onExportImage, onClearCanvas, onShowShortcuts }: Props) {
+export default function MainMenu({ onOpenFile, onSaveFile, onExportImage, onClearCanvas, onShowShortcuts, onShowWelcome }: Props) {
   const [isOpen, setIsOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -55,6 +57,7 @@ export default function MainMenu({ onOpenFile, onSaveFile, onExportImage, onClea
     { label: "Save to file…", shortcut: "Ctrl+S", icon: faFloppyDisk, onSelect: onSaveFile },
     { label: "Export image…", shortcut: "Ctrl+Shift+E", icon: faFileExport, onSelect: onExportImage },
     { label: "Keyboard shortcuts", shortcut: "?", icon: faKeyboard, onSelect: onShowShortcuts },
+    { label: "Welcome tour", icon: faCircleInfo, onSelect: onShowWelcome },
     { label: "Clear canvas", icon: faBroom, onSelect: onClearCanvas, isDestructive: true },
   ];
 
